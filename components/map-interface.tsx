@@ -1,18 +1,18 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
-import { MapPin, NavigationIcon, Plus, Compass, Map as MapIcon, Loader2, Settings2, X } from "lucide-react"
+import { MapPin, Settings2, X, Compass, Loader2 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Slider } from "@/components/ui/slider"
 import { RoutePanel, RouteData, RouteStep } from "@/components/route-panel"
 import "leaflet/dist/leaflet.css"
 
-interface Coordinates {
+interface Terminal {
+  id: string
+  name: string
   lat: number
   lng: number
-  name: string
 }
 
 interface RouteFare {
@@ -20,16 +20,42 @@ interface RouteFare {
   discounted: number
 }
 
-interface MockRouteData {
-  id: string
+interface APIRoute {
+  id: number
+  description: string
+  destination_name?: string 
+  stops: {
+    id: number
+    stop_name: string
+    latitude: string
+    longitude: string
+    fare: string
+    time: number
+  }[]
+  mode: {
+    mode_name: string
+  }
+}
+
+interface APITerminal {
+  id: number
+  name: string
+  latitude: string
+  longitude: string
+  city: { name: string }
+  routes: APIRoute[]
+}
+
+interface ExpandedRoute {
+  originalId: string
   name: string
   type: string
   fare: RouteFare
-  distance: string
   time: string
-  from: Coordinates
-  to: Coordinates
-  steps: string[] | { instruction: string; location?: [number, number] }[]
+  distance: string
+  start: Terminal
+  end: Terminal
+  steps: { instruction: string; location?: [number, number] }[]
 }
 
 function getDistance(lat1: number, lon1: number, lat2: number, lon2: number) {
@@ -47,187 +73,279 @@ function deg2rad(deg: number) {
   return deg * (Math.PI / 180)
 }
 
-function parseTime(timeStr: string): number {
-  return parseInt(timeStr.split(" ")[0])
+function parseTime(time: number): number {
+  return time
 }
 
-function parseDist(distStr: string): number {
-  return parseFloat(distStr.split(" ")[0])
+function parseDist(dist: number): number {
+  return dist
+}
+
+function parseDistanceInput(input: string): number {
+    const clean = input.toLowerCase().replace(/\s/g, '');
+    if (clean.includes('m') && !clean.includes('km')) {
+        return parseFloat(clean) / 1000;
+    }
+    return parseFloat(clean) || 0;
 }
 
 export function MapInterface() {
-  const mapRef = useRef<HTMLDivElement>(null)
+  const API_BASE_URL = "https://api-lakbayan.onrender.com/api"
+
+  const mapContainerRef = useRef<HTMLDivElement>(null)
+  const mapInstanceRef = useRef<any>(null)
+  
   const [map, setMap] = useState<any>(null)
   const [L, setLeaflet] = useState<any>(null)
   const [selectedRoute, setSelectedRoute] = useState<RouteData | null>(null)
   
   const [fromLocation, setFromLocation] = useState("")
   const [toLocation, setToLocation] = useState("")
-  const [pinnedStart, setPinnedStart] = useState<Coordinates | null>(null)
-  const [pinnedEnd, setPinnedEnd] = useState<Coordinates | null>(null)
+  const [pinnedStart, setPinnedStart] = useState<Terminal | null>(null)
+  const [pinnedEnd, setPinnedEnd] = useState<Terminal | null>(null)
   
   const [isSearching, setIsSearching] = useState(false)
   const [pinningMode, setPinningMode] = useState<'from' | 'to' | null>(null)
   const [showSettings, setShowSettings] = useState(false)
-
-  const [maxWalk, setMaxWalk] = useState(2)
-  const [maxTransfers, setMaxTransfers] = useState(1)
   
-  const userRouteRef = useRef<any>(null)
+  const [maxWalkInput, setMaxWalkInput] = useState("2 km")
+  const [maxTransfers, setMaxTransfers] = useState(2)
+
+  const [terminalsData, setTerminalsData] = useState<APITerminal[]>([])
+  const [ready, setReady] = useState(false)
+  
+  const userMarkersRef = useRef<any[]>([])
   const routeLayersRef = useRef<any[]>([])
+  const terminalPreviewRef = useRef<any[]>([])
+  const terminalsDataRef = useRef<APITerminal[]>([])
 
   useEffect(() => {
-    if (!mapRef.current || map) return
+    if (mapInstanceRef.current !== null || typeof window === "undefined") return
 
     import("leaflet").then((LeafletModule) => {
       const LeafletLib = LeafletModule.default
       setLeaflet(LeafletLib)
 
-      const newMap = LeafletLib.map(mapRef.current!, {
+      if (!mapContainerRef.current) return
+      
+      const newMap = LeafletLib.map(mapContainerRef.current, {
         zoomControl: false,
       }).setView([14.5995, 121.0], 12)
 
-      LeafletLib.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "© OpenStreetMap contributors",
+      mapInstanceRef.current = newMap
+      setMap(newMap)
+
+      LeafletLib.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
+        attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
         maxZoom: 19,
       }).addTo(newMap)
 
       LeafletLib.control.zoom({ position: "bottomright" }).addTo(newMap)
 
-      setMap(newMap)
-
-      newMap.on('click', async (e: any) => {
-        const container = mapRef.current
-        if (container && container.classList.contains('cursor-crosshair')) {
-             handleMapClick(e.latlng, newMap, LeafletLib)
+      newMap.on('click', (e: any) => {
+        const container = mapContainerRef.current
+        if (container && !container.classList.contains('cursor-crosshair')) {
+             if (terminalPreviewRef.current.length > 0) {
+                 terminalPreviewRef.current.forEach(layer => newMap.removeLayer(layer))
+                 terminalPreviewRef.current = []
+             }
         }
       })
-
-      mockRoutes.forEach(route => {
-        addTerminalMarker(LeafletLib, newMap, route.from, "Start Terminal")
-        addTerminalMarker(LeafletLib, newMap, route.to, "End Terminal")
-      })
-
-      const loadRoutesSequentially = async () => {
-        for (const route of mockRoutes) {
-          await fetchRoute(LeafletLib, newMap, route)
-          await new Promise((resolve) => setTimeout(resolve, 100))
-        }
-      }
-      loadRoutesSequentially()
+      
+      fetchInitialDataSafe(LeafletLib, newMap)
     })
 
     return () => {
-      if (map) map.remove()
+      if (mapInstanceRef.current) {
+        mapInstanceRef.current.remove()
+        mapInstanceRef.current = null
+        setMap(null)
+      }
     }
   }, [])
 
   useEffect(() => {
-    if (mapRef.current) {
-        if (pinningMode) {
-            mapRef.current.classList.add('cursor-crosshair')
-        } else {
-            mapRef.current.classList.remove('cursor-crosshair')
+    if (!map || !L) return;
+
+    userMarkersRef.current.forEach(m => map.removeLayer(m));
+    userMarkersRef.current = [];
+
+    const startHtml = `<div style="width:16px;height:16px;background-color:#22c55e;border:2px solid white;border-radius:50%;box-shadow:0 2px 4px rgba(0,0,0,0.3);"></div>`
+    const endHtml = `<div style="width:16px;height:16px;background-color:#ef4444;border:2px solid white;border-radius:50%;box-shadow:0 2px 4px rgba(0,0,0,0.3);"></div>`
+
+    const startIcon = L.divIcon({ className: 'custom-pin-start', html: startHtml, iconSize: [16, 16] })
+    const endIcon = L.divIcon({ className: 'custom-pin-end', html: endHtml, iconSize: [16, 16] })
+
+    if (pinnedStart) {
+        const m = L.marker([pinnedStart.lat, pinnedStart.lng], {icon: startIcon}).addTo(map);
+        userMarkersRef.current.push(m);
+        if (!pinnedEnd && !isSearching) map.panTo([pinnedStart.lat, pinnedStart.lng]);
+    }
+
+    if (pinnedEnd) {
+        const m = L.marker([pinnedEnd.lat, pinnedEnd.lng], {icon: endIcon}).addTo(map);
+        userMarkersRef.current.push(m);
+        if (!pinnedStart && !isSearching) map.panTo([pinnedEnd.lat, pinnedEnd.lng]);
+    }
+
+    if (pinnedStart && pinnedEnd && !selectedRoute && !isSearching) {
+        const bounds = L.latLngBounds([
+            [pinnedStart.lat, pinnedStart.lng],
+            [pinnedEnd.lat, pinnedEnd.lng]
+        ]);
+        map.fitBounds(bounds, { padding: [50, 50] });
+    }
+
+  }, [pinnedStart, pinnedEnd, map, L]);
+
+  useEffect(() => {
+    if (!map || !L) return
+
+    const clickHandler = async (e: any) => {
+        if (!pinningMode) return
+        
+        try {
+            const response = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${e.latlng.lat}&lon=${e.latlng.lng}&format=json`)
+            const data = await response.json()
+            const name = data.display_name || `${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)}`
+            const coords: Terminal = { id: "pinned", lat: e.latlng.lat, lng: e.latlng.lng, name }
+
+            if (pinningMode === 'from') {
+                setFromLocation(name)
+                setPinnedStart(coords)
+            } else {
+                setToLocation(name)
+                setPinnedEnd(coords)
+            }
+        } catch (err) {
+            const fallbackName = `${e.latlng.lat.toFixed(4)}, ${e.latlng.lng.toFixed(4)}`
+            const coords = { id: "pinned", lat: e.latlng.lat, lng: e.latlng.lng, name: fallbackName };
+            if (pinningMode === 'from') { setFromLocation(fallbackName); setPinnedStart(coords); }
+            else { setToLocation(fallbackName); setPinnedEnd(coords); }
+        } finally {
+            setPinningMode(null)
         }
     }
-    if (map) {
-        map.off('click')
-        map.on('click', (e: any) => {
-            if (pinningMode) {
-                handleMapClick(e.latlng, map, L)
-            }
-        })
+
+    map.on('click', clickHandler)
+
+    if (mapContainerRef.current) {
+        if (pinningMode) mapContainerRef.current.classList.add('cursor-crosshair')
+        else mapContainerRef.current.classList.remove('cursor-crosshair')
     }
-  }, [pinningMode, map, L])
 
-  const handleMapClick = async (latlng: any, mapInstance: any, LeafletLib: any) => {
-      if (!pinningMode) return
-
-      const tempMarker = LeafletLib.marker([latlng.lat, latlng.lng]).addTo(mapInstance)
-      
-      try {
-          const response = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${latlng.lat}&lon=${latlng.lng}&format=json`)
-          const data = await response.json()
-          
-          const name = data.display_name || `${latlng.lat.toFixed(4)}, ${latlng.lng.toFixed(4)}`
-          const coords = { lat: latlng.lat, lng: latlng.lng, name }
-
-          if (pinningMode === 'from') {
-              setFromLocation(name)
-              setPinnedStart(coords)
-          } else {
-              setToLocation(name)
-              setPinnedEnd(coords)
-          }
-      } catch (e) {
-          if (pinningMode === 'from') setFromLocation(`${latlng.lat}, ${latlng.lng}`)
-          else setToLocation(`${latlng.lat}, ${latlng.lng}`)
-      } finally {
-          mapInstance.removeLayer(tempMarker)
-          setPinningMode(null)
-      }
-  }
-
-  const clearUserRoute = () => {
-    if (userRouteRef.current && map) {
-      map.removeLayer(userRouteRef.current)
-      userRouteRef.current = null
+    return () => {
+        map.off('click', clickHandler)
     }
-    if (routeLayersRef.current.length > 0) {
-      routeLayersRef.current.forEach(layer => map.removeLayer(layer))
-      routeLayersRef.current = []
-    }
-  }
+  }, [map, L, pinningMode])
 
-  const addTerminalMarker = (LeafletLib: any, mapInstance: any, coords: Coordinates, label: string) => {
-    const icon = LeafletLib.divIcon({
-        className: "terminal-marker",
-        html: `<div class="w-4 h-4 bg-white rounded-full border-4 border-slate-700 shadow-md"></div>`,
-        iconSize: [16, 16],
-    })
-    LeafletLib.marker([coords.lat, coords.lng], { icon })
-        .addTo(mapInstance)
-        .bindPopup(`<strong>${coords.name}</strong><br/>${label}`)
-  }
-
-  const fetchRoute = async (LeafletLib: any, mapInstance: any, route: MockRouteData) => {
+  const fetchInitialDataSafe = async (LeafletLib: any, mapInstance: any) => {
     try {
-      const response = await fetch(
-        `https://router.project-osrm.org/route/v1/driving/${route.from.lng},${route.from.lat};${route.to.lng},${route.to.lat}?overview=full&geometries=geojson`,
-      )
-      if (!response.ok) { drawStraightLine(LeafletLib, mapInstance, route); return }
+      const token = localStorage.getItem("accessToken")
+      const headers: HeadersInit = { "Content-Type": "application/json" }
+      if (token) headers["Authorization"] = `Bearer ${token}`
+
+      const response = await fetch(`${API_BASE_URL}/cached/terminals/`, { headers })
+      
+      if (!response.ok) throw new Error("Failed to fetch terminal data")
       const data = await response.json()
-      if (!data.routes || data.routes.length === 0) { drawStraightLine(LeafletLib, mapInstance, route); return }
-      const coordinates = data.routes[0].geometry.coordinates
-      drawPolyline(LeafletLib, mapInstance, coordinates, route)
-    } catch {
-      drawStraightLine(LeafletLib, mapInstance, route)
+      
+      const terminals = data.terminals as APITerminal[]
+      setTerminalsData(terminals)
+      terminalsDataRef.current = terminals 
+
+      terminals.forEach(t => {
+        addTerminalMarkerSafe(LeafletLib, mapInstance, t)
+      })
+
+      setReady(true)
+    } catch (e) {
+      console.error("API Data Fetch Error:", e)
     }
   }
 
-  const drawPolyline = (LeafletLib: any, mapInstance: any, coordinates: any[], route: MockRouteData) => {
-    const latLngs = coordinates.map((coord: number[]) => [coord[1], coord[0]])
-    const polyline = LeafletLib.polyline(latLngs, { color: "#94a3b8", weight: 3, opacity: 0.5 })
-      .addTo(mapInstance)
-      .on("click", () => handleRouteSelect(route))
-    routeLayersRef.current.push(polyline)
-  }
+  const addTerminalMarkerSafe = (LeafletLib: any, mapInstance: any, t: APITerminal) => {
+    const iconHtml = `
+        <div style="position:relative;width:32px;height:32px;display:flex;align-items:center;justify-content:center;">
+          <div style="width:30px;height:30px;background-color:#0f172a;border:2px solid white;border-radius:50%;box-shadow:0 4px 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;">
+            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2" />
+              <circle cx="7" cy="17" r="2" />
+              <path d="M9 17h6" />
+              <circle cx="17" cy="17" r="2" />
+            </svg>
+          </div>
+          <div style="position:absolute;top:-4px;right:-4px;background-color:#2563eb;color:white;font-size:10px;font-weight:bold;width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1px solid white;">
+            ${t.routes ? t.routes.length : 0}
+          </div>
+        </div>
+    `
 
-  const drawStraightLine = (LeafletLib: any, mapInstance: any, route: MockRouteData) => {
-    const polyline = LeafletLib.polyline(
-      [[route.from.lat, route.from.lng], [route.to.lat, route.to.lng]],
-      { color: "#94a3b8", weight: 3, opacity: 0.5, dashArray: "5, 10" }
-    ).addTo(mapInstance).on("click", () => handleRouteSelect(route))
-    routeLayersRef.current.push(polyline)
-  }
+    const icon = LeafletLib.divIcon({
+        className: "", 
+        html: iconHtml,
+        iconSize: [32, 32],
+        iconAnchor: [16, 32],
+        popupAnchor: [0, -32]
+    })
+    
+    const lat = parseFloat(t.latitude)
+    const lng = parseFloat(t.longitude)
+    const marker = LeafletLib.marker([lat, lng], { icon }).addTo(mapInstance)
 
-  const handleRouteSelect = (route: MockRouteData) => {
-    clearUserRoute()
-    const formattedSteps = route.steps.map(s => ({
-        instruction: typeof s === 'string' ? s : s.instruction,
-        location: typeof s === 'string' ? undefined : s.location
-    }))
-    setSelectedRoute({ ...route, steps: formattedSteps } as RouteData)
+    const routesListHtml = t.routes.map(r => {
+        if (!r.stops || r.stops.length === 0) return '';
+        
+        const endStop = r.stops[r.stops.length - 1];
+        if (!endStop) return '';
+
+        return `
+            <div style="display:flex;gap:8px;padding:8px 0;border-bottom:1px solid #f1f5f9;">
+                <div style="margin-top:4px;width:8px;height:8px;border-radius:50%;background-color:#3b82f6;flex-shrink:0;"></div>
+                <div>
+                    <p style="font-size:12px;font-weight:600;color:#1e293b;margin:0;">${endStop.stop_name}</p>
+                    <p style="font-size:10px;color:#64748b;margin:0;text-transform:uppercase;">${r.mode.mode_name} • ₱${endStop.fare}</p>
+                </div>
+            </div>
+        `
+    }).join('');
+
+    const popupContent = `
+        <div style="min-width:200px;font-family:sans-serif;">
+            <div style="padding-bottom:8px;border-bottom:1px solid #e2e8f0;margin-bottom:8px;">
+                <h3 style="font-weight:bold;font-size:14px;color:#0f172a;margin:0;">${t.name}</h3>
+                <p style="font-size:12px;color:#64748b;margin:0;">${t.city.name}</p>
+            </div>
+            <div style="max-height:150px;overflow-y:auto;">
+                ${t.routes.length > 0 ? routesListHtml : '<p style="font-size:12px;color:#94a3b8;font-style:italic;">No routes.</p>'}
+            </div>
+        </div>
+    `
+
+    marker.bindPopup(popupContent, { closeButton: false, maxWidth: 260 })
+    
+    marker.on('click', (e: any) => {
+        LeafletLib.DomEvent.stopPropagation(e);
+        if (terminalPreviewRef.current.length > 0) {
+            terminalPreviewRef.current.forEach(layer => mapInstance.removeLayer(layer))
+            terminalPreviewRef.current = []
+        }
+        
+        const currentTerminal = terminalsDataRef.current.find(item => item.id === t.id)
+        if (!currentTerminal) return
+
+        currentTerminal.routes.forEach(r => {
+             if (!r.stops || r.stops.length === 0) return;
+             
+             const startCoords: [number, number] = [parseFloat(currentTerminal.latitude), parseFloat(currentTerminal.longitude)]
+             const endStop = r.stops[r.stops.length - 1]
+             const endCoords: [number, number] = [parseFloat(endStop.latitude), parseFloat(endStop.longitude)]
+
+             const line = LeafletLib.polyline([startCoords, endCoords], { color: "#3b82f6", weight: 2, dashArray: "5, 8", opacity: 0.6 }).addTo(mapInstance)
+             const destMarker = LeafletLib.circleMarker(endCoords, { radius: 4, fillColor: "#3b82f6", color: "#fff", weight: 1, fillOpacity: 1 }).addTo(mapInstance)
+             terminalPreviewRef.current.push(line, destMarker)
+        })
+    })
   }
 
   const geocodeLocation = async (locationName: string) => {
@@ -238,6 +356,7 @@ export function MapInterface() {
       const data = await response.json()
       if (data && data.length > 0) {
         return {
+          id: "geocoded",
           lat: Number.parseFloat(data[0].lat),
           lng: Number.parseFloat(data[0].lon),
           name: data[0].display_name,
@@ -249,27 +368,43 @@ export function MapInterface() {
     }
   }
 
-  const handleStepClick = (location: [number, number]) => {
-    if (map) map.flyTo(location, 16, { animate: true, duration: 1.5 })
+  const fetchRouteGeometry = async (start: {lat: number, lng: number}, end: {lat: number, lng: number}, profile: 'driving' | 'walking') => {
+      try {
+          const response = await fetch(`https://router.project-osrm.org/route/v1/${profile}/${start.lng},${start.lat};${end.lng},${end.lat}?overview=full&geometries=geojson`);
+          if (!response.ok) return null;
+          const data = await response.json();
+          if (data.routes && data.routes.length > 0) {
+              return data.routes[0].geometry.coordinates.map((xy: any) => [xy[1], xy[0]]);
+          }
+          return null;
+      } catch (e) {
+          console.error("OSRM Fetch Error", e);
+          return null;
+      }
   }
 
   const handleSearch = async () => {
-    if (!fromLocation || !toLocation || !map || !L) return
+    if (!fromLocation || !toLocation || !map || !L || !ready) return
 
     setIsSearching(true)
-    clearUserRoute()
+    
+    if (routeLayersRef.current.length > 0) {
+      routeLayersRef.current.forEach(layer => map.removeLayer(layer))
+      routeLayersRef.current = []
+    }
+    if (terminalPreviewRef.current.length > 0) {
+        terminalPreviewRef.current.forEach(layer => map.removeLayer(layer))
+        terminalPreviewRef.current = []
+    }
+    
     setSelectedRoute(null)
 
     try {
       let fromCoords = pinnedStart
-      if (!fromCoords || fromLocation !== fromCoords.name) {
-          fromCoords = await geocodeLocation(fromLocation)
-      }
+      if (!fromCoords || fromLocation !== fromCoords.name) fromCoords = await geocodeLocation(fromLocation)
 
       let toCoords = pinnedEnd
-      if (!toCoords || toLocation !== toCoords.name) {
-          toCoords = await geocodeLocation(toLocation)
-      }
+      if (!toCoords || toLocation !== toCoords.name) toCoords = await geocodeLocation(toLocation)
 
       if (!fromCoords || !toCoords) {
         alert("Locations not found.")
@@ -277,133 +412,173 @@ export function MapInterface() {
         return
       }
 
+      const maxWalkKm = parseDistanceInput(maxWalkInput);
+
+      const allSegments: ExpandedRoute[] = []
+      
+      terminalsData.forEach(terminal => {
+          terminal.routes.forEach(route => {
+              if (!route.stops || route.stops.length === 0) return;
+
+              const startT: Terminal = { id: terminal.id.toString(), name: terminal.name, lat: parseFloat(terminal.latitude), lng: parseFloat(terminal.longitude) }
+              const endStop = route.stops[route.stops.length - 1]
+              const endT: Terminal = { id: endStop.id.toString(), name: endStop.stop_name, lat: parseFloat(endStop.latitude), lng: parseFloat(endStop.longitude) }
+              
+              const baseRoute: ExpandedRoute = {
+                  originalId: `${terminal.id}-${route.id}`,
+                  name: `${route.mode.mode_name} - ${terminal.name} to ${endStop.stop_name}`,
+                  type: route.mode.mode_name,
+                  fare: { regular: parseFloat(endStop.fare), discounted: parseFloat(endStop.fare) * 0.8 },
+                  distance: (parseFloat(endStop.distance as any) || 0).toFixed(1) + " km",
+                  time: endStop.time + " min",
+                  start: startT,
+                  end: endT,
+                  steps: route.stops.map(s => ({ instruction: s.stop_name, location: [parseFloat(s.latitude), parseFloat(s.longitude)] }))
+              }
+
+              allSegments.push({ ...baseRoute, steps: baseRoute.steps.map(s => ({...s})) })
+              
+              allSegments.push({
+                  ...baseRoute,
+                  name: `${baseRoute.name} (Return)`,
+                  start: endT,
+                  end: startT,
+                  steps: [{ instruction: `Board ${baseRoute.type} at ${endT.name}` }, { instruction: `Travel to ${startT.name}` }]
+              })
+          })
+      })
+
       let bestPath = null
       let minCost = Infinity 
 
-      for (const route of mockRoutes) {
-        const d1 = getDistance(fromCoords.lat, fromCoords.lng, route.from.lat, route.from.lng)
-        const d2 = getDistance(route.to.lat, route.to.lng, toCoords.lat, toCoords.lng)
-        const totalCost = (d1 * 12) + parseTime(route.time) + (d2 * 12)
+      for (const segment of allSegments) {
+        const d1 = getDistance(fromCoords.lat, fromCoords.lng, segment.start.lat, segment.start.lng)
+        const d2 = getDistance(segment.end.lat, segment.end.lng, toCoords.lat, toCoords.lng)
+        const totalCost = (d1 * 12) + parseTime(parseInt(segment.time)) + (d2 * 12)
 
-        if (d1 <= maxWalk && totalCost < minCost) {
+        if (d1 <= maxWalkKm && totalCost < minCost) {
           minCost = totalCost
-          bestPath = { type: "direct", route1: route, d1, d2 }
+          bestPath = { type: "direct", segments: [segment], walks: [d1, d2] }
         }
       }
 
       if (maxTransfers >= 1) {
-        for (const r1 of mockRoutes) {
-            const dStart = getDistance(fromCoords.lat, fromCoords.lng, r1.from.lat, r1.from.lng)
-            
-            if (dStart > maxWalk) continue 
+        for (const r1 of allSegments) {
+            const dStart = getDistance(fromCoords.lat, fromCoords.lng, r1.start.lat, r1.start.lng)
+            if (dStart > maxWalkKm) continue 
 
-            for (const r2 of mockRoutes) {
-                if (r1.id === r2.id) continue
-                const dTransfer = getDistance(r1.to.lat, r1.to.lng, r2.from.lat, r2.from.lng)
-                
+            for (const r2 of allSegments) {
+                if (r1.originalId === r2.originalId) continue
+                const dTransfer = getDistance(r1.end.lat, r1.end.lng, r2.start.lat, r2.start.lng)
                 if (dTransfer > 2) continue 
 
-                const dEnd = getDistance(r2.to.lat, r2.to.lng, toCoords.lat, toCoords.lng)
-                
-                const totalCost = (dStart * 12) + parseTime(r1.time) + (dTransfer * 12) + parseTime(r2.time) + (dEnd * 12)
+                const dEnd = getDistance(r2.end.lat, r2.end.lng, toCoords.lat, toCoords.lng)
+                const totalCost = (dStart * 12) + parseTime(parseInt(r1.time)) + (dTransfer * 12) + parseTime(parseInt(r2.time)) + (dEnd * 12)
                 
                 if (totalCost < minCost) {
                     minCost = totalCost
-                    bestPath = { type: "transfer", route1: r1, route2: r2, dStart, dTransfer, dEnd }
+                    bestPath = { type: "transfer", segments: [r1, r2], walks: [dStart, dTransfer, dEnd] }
+                }
+
+                if (maxTransfers >= 2) {
+                      for (const r3 of allSegments) {
+                          if (r2.originalId === r3.originalId || r1.originalId === r3.originalId) continue
+                          const dTransfer2 = getDistance(r2.end.lat, r2.end.lng, r3.start.lat, r3.start.lng)
+                          if (dTransfer2 > 2) continue
+                          
+                          const dEnd2 = getDistance(r3.end.lat, r3.end.lng, toCoords.lat, toCoords.lng)
+                          const totalCost3 = (dStart * 12) + parseTime(parseInt(r1.time)) + (dTransfer * 12) + parseTime(parseInt(r2.time)) + (dTransfer2 * 12) + parseTime(parseInt(r3.time)) + (dEnd2 * 12)
+                          
+                          if (totalCost3 < minCost) {
+                             minCost = totalCost3
+                             bestPath = { type: "multi-transfer", segments: [r1, r2, r3], walks: [dStart, dTransfer, dTransfer2, dEnd2] }
+                          }
+                      }
                 }
             }
         }
       }
 
       if (bestPath) {
-        const markers = []
-        markers.push(L.marker([fromCoords.lat, fromCoords.lng]).addTo(map).bindPopup("Start"))
-        markers.push(L.marker([toCoords.lat, toCoords.lng]).addTo(map).bindPopup("Destination"))
-        
-        const walkColor = "#71717a"
-        const rideColor = "#F7A600"
+        userMarkersRef.current.forEach(m => map.removeLayer(m));
 
-        if (bestPath.type === "direct") {
-            const { route1, d1, d2 } = bestPath
-            
-            const l1 = L.polyline([[fromCoords.lat, fromCoords.lng], [route1.from.lat, route1.from.lng]], { color: walkColor, dashArray: "10,10" }).addTo(map)
-            
-            const response = await fetch(`https://router.project-osrm.org/route/v1/driving/${route1.from.lng},${route1.from.lat};${route1.to.lng},${route1.to.lat}?overview=full&geometries=geojson`)
-            const data = await response.json()
-            const coords = data.routes[0].geometry.coordinates.map((c: any) => [c[1], c[0]])
-            const l2 = L.polyline(coords, { color: rideColor, weight: 6 }).addTo(map)
+        const boundsArray: any[] = [];
+        const steps: RouteStep[] = []
+        let totalFare = 0
+        let totalDist = 0
 
-            const l3 = L.polyline([[route1.to.lat, route1.to.lng], [toCoords.lat, toCoords.lng]], { color: walkColor, dashArray: "10,10" }).addTo(map)
-            
-            routeLayersRef.current.push(l1, l2, l3, ...markers)
-            map.fitBounds(l2.getBounds(), { padding: [50, 50] })
-
-            setSelectedRoute({
-                id: `combined-${route1.id}`,
-                name: `Trip to ${toLocation.split(',')[0]}`,
-                type: `${route1.type} + Walking`,
-                fare: route1.fare,
-                distance: `${(d1 + parseDist(route1.distance) + d2).toFixed(1)} km`,
-                time: `${Math.round(minCost)} min`,
-                steps: [
-                    { instruction: `Walk ${d1.toFixed(1)}km to ${route1.from.name}`, location: [fromCoords.lat, fromCoords.lng] },
-                    ...route1.steps.map(s => ({ instruction: typeof s === 'string' ? s : s.instruction })),
-                    { instruction: `Walk ${d2.toFixed(1)}km to Destination`, location: [route1.to.lat, route1.to.lng] }
-                ]
-            } as RouteData)
-
-        } else if (bestPath.type === "transfer") {
-            const { route1, route2, dStart, dTransfer, dEnd } = bestPath
-            const l1 = L.polyline([[fromCoords.lat, fromCoords.lng], [route1.from.lat, route1.from.lng]], { color: walkColor, dashArray: "10,10" }).addTo(map)
-            
-            const r1Resp = await fetch(`https://router.project-osrm.org/route/v1/driving/${route1.from.lng},${route1.from.lat};${route1.to.lng},${route1.to.lat}?overview=full&geometries=geojson`)
-            const r1Data = await r1Resp.json()
-            const c1 = r1Data.routes[0].geometry.coordinates.map((c: any) => [c[1], c[0]])
-            const l2 = L.polyline(c1, { color: rideColor, weight: 6 }).addTo(map)
-
-            const l3 = L.polyline([[route1.to.lat, route1.to.lng], [route2.from.lat, route2.from.lng]], { color: walkColor, dashArray: "10,10" }).addTo(map)
-
-            const r2Resp = await fetch(`https://router.project-osrm.org/route/v1/driving/${route2.from.lng},${route2.from.lat};${route2.to.lng},${route2.to.lat}?overview=full&geometries=geojson`)
-            const r2Data = await r2Resp.json()
-            const c2 = r2Data.routes[0].geometry.coordinates.map((c: any) => [c[1], c[0]])
-            const l4 = L.polyline(c2, { color: rideColor, weight: 6 }).addTo(map)
-
-            const l5 = L.polyline([[route2.to.lat, route2.to.lng], [toCoords.lat, toCoords.lng]], { color: walkColor, dashArray: "10,10" }).addTo(map)
-
-            routeLayersRef.current.push(l1, l2, l3, l4, l5, ...markers)
-            map.fitBounds(l2.getBounds().extend(l4.getBounds()), { padding: [50, 50] })
-
-            const totalFare = route1.fare.regular + route2.fare.regular
-            const totalDist = dStart + parseDist(route1.distance) + dTransfer + parseDist(route2.distance) + dEnd
-
-            setSelectedRoute({
-                id: `transfer-${route1.id}-${route2.id}`,
-                name: `Trip to ${toLocation.split(',')[0]} (1 Transfer)`,
-                type: `Multi-Leg Trip`,
-                fare: { regular: totalFare, discounted: totalFare * 0.8 },
-                distance: `${totalDist.toFixed(1)} km`,
-                time: `${Math.round(minCost)} min`,
-                steps: [
-                    { instruction: `Walk ${dStart.toFixed(1)}km to ${route1.from.name}`, location: [fromCoords.lat, fromCoords.lng] },
-                    { instruction: `Ride ${route1.type} towards ${route1.to.name}` },
-                    { instruction: `Alight at ${route1.to.name} and Walk ${dTransfer.toFixed(1)}km to ${route2.from.name}`, location: [route1.to.lat, route1.to.lng] },
-                    { instruction: `Ride ${route2.type} towards ${route2.to.name}` },
-                    { instruction: `Alight at ${route2.to.name} and Walk ${dEnd.toFixed(1)}km to Destination`, location: [route2.to.lat, route2.to.lng] }
-                ]
-            } as RouteData)
+        const drawSegment = async (start: any, end: any, type: 'walk' | 'ride', color: string, dash: string | null) => {
+             const profile = type === 'walk' ? 'walking' : 'driving';
+             const geometry = await fetchRouteGeometry(start, end, profile);
+             
+             let layer;
+             if (geometry) {
+                 layer = L.polyline(geometry, { color, weight: type === 'ride' ? 5 : 4, dashArray: dash, opacity: 0.8 }).addTo(map);
+             } else {
+                 layer = L.polyline([[start.lat, start.lng], [end.lat, end.lng]], { color, weight: type === 'ride' ? 5 : 4, dashArray: dash, opacity: 0.8 }).addTo(map);
+             }
+             routeLayersRef.current.push(layer);
+             boundsArray.push(...(geometry || [[start.lat, start.lng], [end.lat, end.lng]]));
         }
+
+        await drawSegment(fromCoords, bestPath.segments[0].start, 'walk', '#64748b', '10, 10');
+        steps.push({ instruction: `Walk ${bestPath.walks[0].toFixed(1)}km to ${bestPath.segments[0].start.name}`, location: [fromCoords.lat, fromCoords.lng] })
+        totalDist += bestPath.walks[0]
+
+        for (let i = 0; i < bestPath.segments.length; i++) {
+            const seg = bestPath.segments[i]
+            totalFare += seg.fare.regular
+            totalDist += parseDist(parseFloat(seg.distance))
+            steps.push({ instruction: `Ride ${seg.type} (${seg.name})` })
+            
+            await drawSegment(seg.start, seg.end, 'ride', '#3b82f6', null);
+
+            if (i < bestPath.segments.length - 1) {
+                const transferWalk = bestPath.walks[i+1]
+                const nextSeg = bestPath.segments[i+1]
+                totalDist += transferWalk
+                steps.push({ instruction: `Alight at ${seg.end.name}, Walk ${transferWalk.toFixed(1)}km to ${nextSeg.start.name}`, location: [seg.end.lat, seg.end.lng] })
+                
+                await drawSegment(seg.end, nextSeg.start, 'walk', '#64748b', '10, 10');
+            }
+        }
+
+        const lastSeg = bestPath.segments[bestPath.segments.length - 1];
+        const lastWalk = bestPath.walks[bestPath.walks.length - 1];
+        await drawSegment(lastSeg.end, toCoords, 'walk', '#64748b', '10, 10');
+        
+        totalDist += lastWalk
+        steps.push({ instruction: `Alight at ${lastSeg.end.name}, Walk ${lastWalk.toFixed(1)}km to Destination`, location: [lastSeg.end.lat, lastSeg.end.lng] })
+
+        const startMarkerHtml = `<div style="width:16px;height:16px;background-color:#22c55e;border:2px solid white;border-radius:50%;box-shadow:0 2px 4px rgba(0,0,0,0.3);"></div>`
+        const endMarkerHtml = `<div style="width:16px;height:16px;background-color:#ef4444;border:2px solid white;border-radius:50%;box-shadow:0 2px 4px rgba(0,0,0,0.3);"></div>`
+        
+        const startMarker = L.marker([fromCoords.lat, fromCoords.lng], {
+            icon: L.divIcon({ className: '', html: startMarkerHtml, iconSize: [16,16] })
+        }).addTo(map).bindPopup("Start");
+        
+        const endMarker = L.marker([toCoords.lat, toCoords.lng], {
+            icon: L.divIcon({ className: '', html: endMarkerHtml, iconSize: [16,16] })
+        }).addTo(map).bindPopup("Destination");
+        
+        routeLayersRef.current.push(startMarker, endMarker);
+
+        if (boundsArray.length > 0) {
+            map.fitBounds(L.latLngBounds(boundsArray), { padding: [50, 50] });
+        }
+
+        setSelectedRoute({
+            id: `multi-${bestPath.type}`,
+            name: `Trip to ${toLocation.split(',')[0]}`,
+            type: `${bestPath.segments.length} Ride(s)`,
+            fare: { regular: totalFare, discounted: totalFare * 0.8 },
+            distance: `${totalDist.toFixed(1)} km`,
+            time: `${Math.round(minCost)} min`,
+            steps: steps
+        } as RouteData)
 
       } else {
         alert("No suitable transit route found. Calculating direct driving route.")
-        const response = await fetch(
-            `https://router.project-osrm.org/route/v1/driving/${fromCoords.lng},${fromCoords.lat};${toCoords.lng},${toCoords.lat}?overview=full&geometries=geojson&steps=true`
-        )
-        const data = await response.json()
-        const route = data.routes[0]
-        const latLngs = route.geometry.coordinates.map((c: number[]) => [c[1], c[0]])
-        const polyline = L.polyline(latLngs, { color: "#E45A5A", weight: 5 }).addTo(map)
-        routeLayersRef.current.push(polyline)
-        map.fitBounds(polyline.getBounds(), { padding: [50, 50] })
       }
 
     } catch (error) {
@@ -416,105 +591,118 @@ export function MapInterface() {
   const handleRecenter = () => { if (map) map.setView([14.5995, 121.0], 12) }
 
   return (
-    <div className="relative h-screen pt-16 z-0">
-      <div className="absolute top-20 left-4 right-4 z-[20] md:left-1/2 md:-translate-x-1/2 md:max-w-3xl">
-        <div className="bg-card rounded-xl shadow-lg p-4 border border-border relative">
+    <div className="relative h-screen pt-16 z-0 bg-slate-50">
+      
+      <div className="absolute top-20 left-4 right-4 z-[20] md:top-24 md:left-1/2 md:-translate-x-1/2 md:max-w-3xl">
+        <div className="bg-white/95 backdrop-blur-md rounded-xl shadow-xl p-3 md:p-4 border border-slate-200 relative">
           
           {pinningMode && (
-             <div className="mb-2 bg-primary/10 text-primary px-3 py-1 rounded-md text-sm font-semibold flex items-center justify-center animate-pulse">
-                <MapIcon className="w-4 h-4 mr-2"/> Tap anywhere on map to select location
+             <div className="mb-3 bg-blue-50 text-blue-700 border border-blue-200 px-3 py-2 rounded-md text-xs font-semibold flex items-center justify-center animate-pulse">
+                <MapPin className="w-3 h-3 mr-2"/> Tap map to select location
              </div>
           )}
-
-          <div className="flex flex-col sm:flex-row gap-2">
-            <div className="flex-1 relative flex gap-1">
-              <div className="relative flex-1">
-                <MapPin className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
-                  placeholder="From: Starting point"
-                  value={fromLocation}
-                  onChange={(e) => {
-                      setFromLocation(e.target.value)
-                      setPinnedStart(null) 
-                  }}
-                  className="pl-10"
-                  onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                />
+          
+          {!ready && (
+              <div className="mb-2 text-center text-xs text-muted-foreground flex items-center justify-center gap-2">
+                  <Loader2 className="w-3 h-3 animate-spin"/> Loading data...
               </div>
-              <Button 
-                variant={pinningMode === 'from' ? "destructive" : "outline"} 
-                size="icon" 
-                onClick={() => setPinningMode(pinningMode === 'from' ? null : 'from')}
-                title="Pin on Map"
-              >
-                <MapIcon className="w-4 h-4" />
-              </Button>
+          )}
+
+          <div className="flex flex-col md:flex-row gap-3">
+            <div className="flex-1 space-y-2">
+               <div className="relative flex gap-2">
+                  <div className="relative flex-1">
+                    <div className="absolute left-3 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-green-500 ring-2 ring-green-100"></div>
+                    <Input
+                      placeholder="Start Location"
+                      value={fromLocation}
+                      onChange={(e) => { setFromLocation(e.target.value); setPinnedStart(null); }}
+                      className="pl-8 h-10 bg-slate-50 border-slate-200 focus:bg-white transition-colors"
+                      onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                      disabled={!ready}
+                    />
+                  </div>
+                  <Button 
+                    variant={pinningMode === 'from' ? "destructive" : "secondary"} 
+                    size="icon" 
+                    className="shrink-0"
+                    onClick={() => setPinningMode(pinningMode === 'from' ? null : 'from')}
+                    disabled={!ready}
+                  >
+                    <MapPin className="w-4 h-4" />
+                  </Button>
+               </div>
             </div>
 
-            <div className="flex-1 relative flex gap-1">
-              <div className="relative flex-1">
-                <NavigationIcon className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                <Input
-                  placeholder="To: Destination"
-                  value={toLocation}
-                  onChange={(e) => {
-                      setToLocation(e.target.value)
-                      setPinnedEnd(null)
-                  }}
-                  className="pl-10"
-                  onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                />
-              </div>
-              <Button 
-                variant={pinningMode === 'to' ? "destructive" : "outline"} 
-                size="icon" 
-                onClick={() => setPinningMode(pinningMode === 'to' ? null : 'to')}
-                title="Pin on Map"
-              >
-                 <MapIcon className="w-4 h-4" />
-              </Button>
+            <div className="flex-1 space-y-2">
+               <div className="relative flex gap-2">
+                  <div className="relative flex-1">
+                    <div className="absolute left-3 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-red-500 ring-2 ring-red-100"></div>
+                    <Input
+                      placeholder="Destination"
+                      value={toLocation}
+                      onChange={(e) => { setToLocation(e.target.value); setPinnedEnd(null); }}
+                      className="pl-8 h-10 bg-slate-50 border-slate-200 focus:bg-white transition-colors"
+                      onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                      disabled={!ready}
+                    />
+                  </div>
+                  <Button 
+                    variant={pinningMode === 'to' ? "destructive" : "secondary"} 
+                    size="icon" 
+                    className="shrink-0"
+                    onClick={() => setPinningMode(pinningMode === 'to' ? null : 'to')}
+                    disabled={!ready}
+                  >
+                     <MapPin className="w-4 h-4" />
+                  </Button>
+               </div>
             </div>
             
-            <Button variant={showSettings ? "secondary" : "outline"} size="icon" onClick={() => setShowSettings(!showSettings)}>
-                <Settings2 className="w-4 h-4"/>
-            </Button>
+            <div className="flex gap-2 md:border-l md:pl-3 md:border-slate-200 justify-end">
+                <Button variant={showSettings ? "default" : "outline"} size="icon" onClick={() => setShowSettings(!showSettings)} disabled={!ready}>
+                    <Settings2 className="w-4 h-4"/>
+                </Button>
 
-            <Button className="sm:w-auto" onClick={handleSearch} disabled={isSearching}>
-              {isSearching ? <Loader2 className="w-4 h-4 animate-spin"/> : "Search"}
-            </Button>
+                <Button className="flex-1 md:w-auto bg-slate-900 hover:bg-slate-800 text-white" onClick={handleSearch} disabled={isSearching || !ready}>
+                  {isSearching ? <Loader2 className="w-4 h-4 animate-spin"/> : "Search"}
+                </Button>
+            </div>
           </div>
 
           {showSettings && (
-            <div className="absolute top-full left-0 right-0 mt-2 bg-card border border-border rounded-xl shadow-xl p-4 z-30">
+            <div className="absolute top-full left-0 right-0 mt-3 bg-white/95 backdrop-blur-md border border-slate-200 rounded-xl shadow-2xl p-5 z-30">
                 <div className="flex justify-between items-center mb-4">
-                    <h4 className="font-semibold text-sm">Route Preferences</h4>
+                    <h4 className="font-bold text-sm text-slate-800">Routing Preferences</h4>
                     <Button variant="ghost" size="sm" onClick={() => setShowSettings(false)}><X className="w-4 h-4"/></Button>
                 </div>
-                <div className="space-y-4">
+                <div className="space-y-6">
                     <div>
                         <div className="flex justify-between mb-2">
-                            <Label className="text-xs">Max Initial Walk: {maxWalk} km</Label>
+                            <Label className="text-xs font-semibold text-slate-600">Max Initial Walk (Text Input)</Label>
                         </div>
-                        <Slider 
-                            value={[maxWalk]} 
-                            onValueChange={(v) => setMaxWalk(v[0])} 
-                            min={0.5} max={10} step={0.5}
+                        <Input 
+                            value={maxWalkInput}
+                            onChange={(e) => setMaxWalkInput(e.target.value)}
+                            placeholder="e.g. 500m, 1km, 2000 meters"
+                            className="bg-slate-50"
                         />
+                        <p className="text-[10px] text-slate-400 mt-1">Accepts meters (m) or kilometers (km). Default is km.</p>
                     </div>
                     <div>
-                        <div className="flex justify-between mb-2">
-                            <Label className="text-xs">Max Transfers: {maxTransfers}</Label>
+                        <div className="flex justify-between mb-3">
+                            <Label className="text-xs font-semibold text-slate-600">Max Transfers</Label>
                         </div>
                         <div className="flex gap-2">
-                             {[0, 1, 2].map(num => (
+                             {[0, 1, 2, 3].map(num => (
                                  <Button 
                                     key={num} 
                                     variant={maxTransfers === num ? "default" : "outline"}
                                     size="sm"
-                                    className="flex-1"
+                                    className={`flex-1 ${maxTransfers === num ? 'bg-slate-900 text-white' : ''}`}
                                     onClick={() => setMaxTransfers(num)}
                                  >
-                                    {num === 0 ? "Direct Only" : num}
+                                    {num}
                                  </Button>
                              ))}
                         </div>
@@ -522,268 +710,25 @@ export function MapInterface() {
                 </div>
             </div>
           )}
-
-          <p className="text-xs text-muted-foreground mt-2 text-center">Tulungan natin ang iba makauwi 🚌</p>
         </div>
       </div>
 
-      <div ref={mapRef} className="w-full h-full relative z-[1]" />
+      <div ref={mapContainerRef} className="w-full h-full relative z-[1]" />
 
-      <div className="absolute bottom-6 right-6 z-[20] flex flex-col gap-2">
-        <Button size="icon" className="w-12 h-12 rounded-full shadow-lg" onClick={handleRecenter}><Compass className="w-5 h-5" /></Button>
-        <Button size="icon" className="w-12 h-12 rounded-full shadow-lg"><Plus className="w-5 h-5" /></Button>
+      <div className="absolute bottom-24 right-4 md:bottom-8 md:right-6 z-[20] flex flex-col gap-3">
+        <Button size="icon" className="w-10 h-10 md:w-12 md:h-12 rounded-full shadow-xl bg-white text-slate-700 hover:bg-slate-50 border border-slate-100" onClick={handleRecenter}>
+            <Compass className="w-5 h-5" />
+        </Button>
       </div>
 
-      {selectedRoute && <RoutePanel route={selectedRoute} onClose={() => setSelectedRoute(null)} onStepClick={handleStepClick}/>}
+      {selectedRoute && <RoutePanel route={selectedRoute} onClose={() => setSelectedRoute(null)} onStepClick={() => {}}/>}
       
-      <div className="absolute bottom-6 left-6 z-[20] bg-card/95 backdrop-blur-sm rounded-lg px-4 py-2 shadow-lg border border-border hidden md:block">
-        <p className="text-sm font-medium text-foreground">Sabay tayo sa biyahe — Sama-samang Hanap ng Daan</p>
+      <div className="absolute bottom-6 left-6 z-[20] bg-white/90 backdrop-blur-sm rounded-lg px-4 py-2 shadow-lg border border-slate-200 hidden md:block">
+        <p className="text-xs font-medium text-slate-500 flex items-center gap-2">
+            <span className="w-2 h-2 rounded-full bg-green-500"></span> Live Traffic 
+            <span className="w-2 h-2 rounded-full bg-blue-500 ml-2"></span> Verified Terminals
+        </p>
       </div>
     </div>
   )
 }
-
-const mockRoutes: MockRouteData[] = [
-  {
-    id: "1",
-    name: "Jeep - Cubao to Quiapo",
-    type: "Jeepney",
-    fare: { regular: 15, discounted: 12 },
-    distance: "8.5 km",
-    time: "35 min",
-    from: { lat: 14.6191, lng: 121.0577, name: "Cubao" },
-    to: { lat: 14.5995, lng: 120.9842, name: "Quiapo" },
-    steps: ["Board jeep at Cubao terminal", "Pass through EDSA", "Alight at Quiapo Church"],
-  },
-  {
-    id: "2",
-    name: "Bus - Alabang to Makati",
-    type: "Bus",
-    fare: { regular: 25, discounted: 20 },
-    distance: "12.3 km",
-    time: "45 min",
-    from: { lat: 14.4291, lng: 121.0418, name: "Alabang" },
-    to: { lat: 14.5547, lng: 121.0244, name: "Makati" },
-    steps: ["Board bus at Alabang Town Center", "Express route via Skyway", "Alight at Ayala Avenue"],
-  },
-  {
-    id: "3",
-    name: "MRT - North Avenue to Taft Avenue",
-    type: "MRT",
-    fare: { regular: 28, discounted: 22 },
-    distance: "16.9 km",
-    time: "30 min",
-    from: { lat: 14.6565, lng: 121.0319, name: "North Avenue" },
-    to: { lat: 14.5386, lng: 121.0004, name: "Taft Avenue" },
-    steps: ["Enter North Avenue Station", "Take MRT-3 southbound", "Exit at Taft Avenue Station"],
-  },
-  {
-    id: "4",
-    name: "Jeep - Divisoria to Baclaran",
-    type: "Jeepney",
-    fare: { regular: 15, discounted: 12 },
-    distance: "11.2 km",
-    time: "50 min",
-    from: { lat: 14.6042, lng: 120.9774, name: "Divisoria" },
-    to: { lat: 14.5197, lng: 120.9933, name: "Baclaran" },
-    steps: ["Board at Divisoria terminal", "Pass through Taft Avenue", "Alight at Baclaran Church"],
-  },
-  {
-    id: "5",
-    name: "UV Express - Fairview to Ortigas",
-    type: "UV Express",
-    fare: { regular: 45, discounted: 36 },
-    distance: "18.5 km",
-    time: "40 min",
-    from: { lat: 14.7167, lng: 121.0583, name: "Fairview" },
-    to: { lat: 14.5836, lng: 121.0569, name: "Ortigas" },
-    steps: ["Board at Fairview terminal", "Express via Commonwealth", "Alight at Ortigas Center"],
-  },
-  {
-    id: "6",
-    name: "LRT-1 - Baclaran to Roosevelt",
-    type: "LRT",
-    fare: { regular: 30, discounted: 24 },
-    distance: "20.7 km",
-    time: "45 min",
-    from: { lat: 14.5197, lng: 120.9933, name: "Baclaran" },
-    to: { lat: 14.6544, lng: 121.0236, name: "Roosevelt" },
-    steps: ["Enter Baclaran Station", "Take LRT-1 northbound", "Exit at Roosevelt Station"],
-  },
-  {
-    id: "7",
-    name: "Bus - Pasay to Monumento",
-    type: "Bus",
-    fare: { regular: 30, discounted: 24 },
-    distance: "15.8 km",
-    time: "55 min",
-    from: { lat: 14.5378, lng: 121.0014, name: "Pasay" },
-    to: { lat: 14.6542, lng: 120.9842, name: "Monumento" },
-    steps: ["Board at Pasay Rotonda", "Via Taft and Rizal Avenue", "Alight at Monumento Circle"],
-  },
-  {
-    id: "8",
-    name: "Jeep - Mandaluyong to Pasig",
-    type: "Jeepney",
-    fare: { regular: 13, discounted: 10 },
-    distance: "5.2 km",
-    time: "20 min",
-    from: { lat: 14.5794, lng: 121.0359, name: "Mandaluyong" },
-    to: { lat: 14.5764, lng: 121.0851, name: "Pasig" },
-    steps: ["Board at Shaw Boulevard", "Pass through EDSA", "Alight at Pasig City Hall"],
-  },
-  {
-    id: "9",
-    name: "UV Express - Antipolo to Cubao",
-    type: "UV Express",
-    fare: { regular: 50, discounted: 40 },
-    distance: "22.1 km",
-    time: "50 min",
-    from: { lat: 14.5864, lng: 121.1755, name: "Antipolo" },
-    to: { lat: 14.6191, lng: 121.0577, name: "Cubao" },
-    steps: ["Board at Antipolo Cathedral", "Via Marcos Highway", "Alight at Farmers Plaza"],
-  },
-  {
-    id: "10",
-    name: "Jeep - Marikina to Cubao",
-    type: "Jeepney",
-    fare: { regular: 18, discounted: 14 },
-    distance: "9.7 km",
-    time: "35 min",
-    from: { lat: 14.6507, lng: 121.1029, name: "Marikina" },
-    to: { lat: 14.6191, lng: 121.0577, name: "Cubao" },
-    steps: ["Board at Marikina City Hall", "Via Aurora Boulevard", "Alight at Gateway Mall"],
-  },
-  {
-    id: "11",
-    name: "Bus - BGC to Quezon City",
-    type: "Bus",
-    fare: { regular: 35, discounted: 28 },
-    distance: "14.3 km",
-    time: "45 min",
-    from: { lat: 14.5547, lng: 121.0474, name: "BGC" },
-    to: { lat: 14.6417, lng: 121.0358, name: "Quezon City" },
-    steps: ["Board at Market Market", "Via C5 and EDSA", "Alight at SM North EDSA"],
-  },
-  {
-    id: "12",
-    name: "Jeep - Caloocan to Malabon",
-    type: "Jeepney",
-    fare: { regular: 13, discounted: 10 },
-    distance: "6.8 km",
-    time: "25 min",
-    from: { lat: 14.6488, lng: 120.983, name: "Caloocan" },
-    to: { lat: 14.6625, lng: 120.9569, name: "Malabon" },
-    steps: ["Board at Monumento", "Via Rizal Avenue Extension", "Alight at Malabon City Hall"],
-  },
-  {
-    id: "13",
-    name: "UV Express - Las Piñas to Makati",
-    type: "UV Express",
-    fare: { regular: 40, discounted: 32 },
-    distance: "16.5 km",
-    time: "40 min",
-    from: { lat: 14.4453, lng: 120.9831, name: "Las Piñas" },
-    to: { lat: 14.5547, lng: 121.0244, name: "Makati" },
-    steps: ["Board at Alabang-Zapote Road", "Express via Skyway", "Alight at Ayala Avenue"],
-  },
-  {
-    id: "14",
-    name: "LRT-2 - Santolan to Recto",
-    type: "LRT",
-    fare: { regular: 25, discounted: 20 },
-    distance: "13.8 km",
-    time: "30 min",
-    from: { lat: 14.6097, lng: 121.0856, name: "Santolan" },
-    to: { lat: 14.6031, lng: 120.9897, name: "Recto" },
-    steps: ["Enter Santolan Station", "Take LRT-2 westbound", "Exit at Recto Station"],
-  },
-  {
-    id: "15",
-    name: "Jeep - Taguig to Pasay",
-    type: "Jeepney",
-    fare: { regular: 15, discounted: 12 },
-    distance: "8.9 km",
-    time: "30 min",
-    from: { lat: 14.5176, lng: 121.0509, name: "Taguig" },
-    to: { lat: 14.5378, lng: 121.0014, name: "Pasay" },
-    steps: ["Board at FTI", "Via C5 and EDSA", "Alight at Pasay Rotonda"],
-  },
-  {
-    id: "16",
-    name: "Bus - Novaliches to Manila",
-    type: "Bus",
-    fare: { regular: 32, discounted: 26 },
-    distance: "19.2 km",
-    time: "60 min",
-    from: { lat: 14.7269, lng: 121.0419, name: "Novaliches" },
-    to: { lat: 14.5995, lng: 120.9842, name: "Manila" },
-    steps: ["Board at Novaliches Bayan", "Via Quirino Highway and EDSA", "Alight at Quiapo"],
-  },
-  {
-    id: "17",
-    name: "Jeep - San Juan to Mandaluyong",
-    type: "Jeepney",
-    fare: { regular: 12, discounted: 10 },
-    distance: "4.1 km",
-    time: "15 min",
-    from: { lat: 14.6019, lng: 121.0355, name: "San Juan" },
-    to: { lat: 14.5794, lng: 121.0359, name: "Mandaluyong" },
-    steps: ["Board at Pinaglabanan", "Via Aurora Boulevard", "Alight at Shaw Boulevard"],
-  },
-  {
-    id: "18",
-    name: "UV Express - Parañaque to Ortigas",
-    type: "UV Express",
-    fare: { regular: 55, discounted: 44 },
-    distance: "21.7 km",
-    time: "50 min",
-    from: { lat: 14.4793, lng: 121.0198, name: "Parañaque" },
-    to: { lat: 14.5836, lng: 121.0569, name: "Ortigas" },
-    steps: ["Board at Sucat terminal", "Express via C5", "Alight at Megamall"],
-  },
-  {
-    id: "19",
-    name: "Jeep - Valenzuela to Malabon",
-    type: "Jeepney",
-    fare: { regular: 13, discounted: 10 },
-    distance: "7.3 km",
-    time: "25 min",
-    from: { lat: 14.6937, lng: 120.983, name: "Valenzuela" },
-    to: { lat: 14.6625, lng: 120.9569, name: "Malabon" },
-    steps: ["Board at Valenzuela City Hall", "Via MacArthur Highway", "Alight at Malabon Market"],
-  },
-  {
-    id: "20",
-    name: "Bus - Navotas to Manila",
-    type: "Bus",
-    fare: { regular: 28, discounted: 22 },
-    distance: "13.5 km",
-    time: "45 min",
-    from: { lat: 14.6625, lng: 120.9403, name: "Navotas" },
-    to: { lat: 14.5995, lng: 120.9842, name: "Manila" },
-    steps: ["Board at Navotas Fish Port", "Via R-10 and Rizal Avenue", "Alight at Divisoria"],
-  },
-  {
-    id: "21",
-    name: "Jeep - Pateros to Makati",
-    type: "Jeepney",
-    fare: { regular: 16, discounted: 13 },
-    distance: "7.8 km",
-    time: "30 min",
-    from: { lat: 14.5436, lng: 121.0658, name: "Pateros" },
-    to: { lat: 14.5547, lng: 121.0244, name: "Makati" },
-    steps: ["Board at Pateros Market", "Via C5 and Kalayaan Avenue", "Alight at Guadalupe"],
-  },
-  {
-    id: "22",
-    name: "UV Express - Cavite to Pasay",
-    type: "UV Express",
-    fare: { regular: 60, discounted: 48 },
-    distance: "25.4 km",
-    time: "55 min",
-    from: { lat: 14.2456, lng: 120.8792, name: "Cavite" },
-    to: { lat: 14.5378, lng: 121.0014, name: "Pasay" },
-    steps: ["Board at Bacoor terminal", "Express via Coastal Road", "Alight at EDSA-Taft"],
-  },
-]

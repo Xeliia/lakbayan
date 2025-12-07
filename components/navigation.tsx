@@ -12,6 +12,7 @@ export function Navigation() {
     { href: "/", label: "Map", icon: Map },
     { href: "/how-to-use", label: "How to Use", icon: HelpCircle },
     { href: "/about", label: "About", icon: Info },
+    { href: "/profile", label: "Profile", icon: Info },
   ]
 
   return (
