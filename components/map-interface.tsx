@@ -9,8 +9,7 @@ import { RoutePanel, RouteData, RouteStep } from "@/components/route-panel"
 import { ContributionModal } from "@/components/contribution-modal"
 import "leaflet/dist/leaflet.css"
 
-// Import types only to avoid server-side issues with Leaflet
-import type { Map, Layer, Marker, Polyline, CircleMarker, LeafletMouseEvent } from "leaflet"
+import type { Map, Layer, Marker, Polyline, CircleMarker, LeafletMouseEvent, LatLngBoundsExpression } from "leaflet"
 import type * as Leaflet from "leaflet"
 
 interface Terminal {
@@ -64,7 +63,6 @@ interface ExpandedRoute {
   steps: { instruction: string; location?: [number, number] }[]
 }
 
-// Helper types for route calculation
 interface BestPath {
     type: string;
     segments: ExpandedRoute[];
@@ -95,7 +93,7 @@ function parseDist(dist: number): number {
 }
 
 function parseDistanceInput(input: string): number {
-    const clean = input.toLowerCase().replace(/\s/g, '');
+    const clean = input.toLowerCase().replace(/\s/g, ' ');
     if (clean.includes('m') && !clean.includes('km')) {
         return parseFloat(clean) / 1000;
     }
@@ -107,7 +105,6 @@ export function MapInterface() {
 
   const mapContainerRef = useRef<HTMLDivElement>(null)
   
-  // Strict typing for refs and state
   const mapInstanceRef = useRef<Map | null>(null)
   const [map, setMap] = useState<Map | null>(null)
   const [L, setLeaflet] = useState<typeof Leaflet | null>(null)
@@ -142,20 +139,146 @@ export function MapInterface() {
 
     if (mapInstanceRef.current) return;
 
+    const addTerminalMarkerSafe = (LeafletLib: typeof Leaflet, mapInstance: Map, t: APITerminal) => {
+      const iconHtml = `
+          <div style="position:relative;width:32px;height:32px;display:flex;align-items:center;justify-content:center;">
+            <div style="width:30px;height:30px;background-color:#0f172a;border:2px solid white;border-radius:50%;box-shadow:0 4px 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2" />
+                <circle cx="7" cy="17" r="2" />
+                <path d="M9 17h6" />
+                <circle cx="17" cy="17" r="2" />
+              </svg>
+            </div>
+            <div style="position:absolute;top:-4px;right:-4px;background-color:#2563eb;color:white;font-size:10px;font-weight:bold;width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1px solid white;">
+              ${t.routes ? t.routes.length : 0}
+            </div>
+          </div>
+      `
+
+      const icon = LeafletLib.divIcon({
+          className: "", 
+          html: iconHtml,
+          iconSize: [32, 32],
+          iconAnchor: [16, 32],
+          popupAnchor: [0, -32]
+      })
+      
+      const lat = parseFloat(t.latitude)
+      const lng = parseFloat(t.longitude)
+      const marker = LeafletLib.marker([lat, lng], { icon }).addTo(mapInstance)
+
+      const routesListHtml = t.routes.map(r => {
+          if (!r.stops || r.stops.length === 0) return '';
+          
+          const endStop = r.stops[r.stops.length - 1];
+          if (!endStop) return '';
+
+          return `
+              <div style="display:flex;gap:8px;padding:8px 0;border-bottom:1px solid #f1f5f9;">
+                  <div style="margin-top:4px;width:8px;height:8px;border-radius:50%;background-color:#3b82f6;flex-shrink:0;"></div>
+                  <div>
+                      <p style="font-size:12px;font-weight:600;color:#1e293b;margin:0;">${endStop.stop_name}</p>
+                      <p style="font-size:10px;color:#64748b;margin:0;text-transform:uppercase;">${r.mode.mode_name} • ₱${endStop.fare}</p>
+                  </div>
+              </div>
+          `
+      }).join('');
+
+      const popupContent = `
+          <div style="min-width:200px;font-family:sans-serif;">
+              <div style="padding-bottom:8px;border-bottom:1px solid #e2e8f0;margin-bottom:8px;">
+                  <h3 style="font-weight:bold;font-size:14px;color:#0f172a;margin:0;">${t.name}</h3>
+                  <p style="font-size:12px;color:#64748b;margin:0;">${t.city.name}</p>
+              </div>
+              <div style="max-height:150px;overflow-y:auto;">
+                  ${t.routes.length > 0 ? routesListHtml : '<p style="font-size:12px;color:#94a3b8;font-style:italic;">No routes.</p>'}
+              </div>
+          </div>
+      `
+
+      marker.bindPopup(popupContent, { closeButton: false, maxWidth: 260 })
+      
+      marker.on('click', async (e: LeafletMouseEvent) => {
+          LeafletLib.DomEvent.stopPropagation(e);
+          if (terminalPreviewRef.current.length > 0) {
+              terminalPreviewRef.current.forEach(layer => mapInstance.removeLayer(layer))
+              terminalPreviewRef.current = []
+          }
+          
+          const currentTerminal = terminalsDataRef.current.find(item => item.id === t.id)
+          if (!currentTerminal) return
+
+          for (const r of currentTerminal.routes) {
+               if (!r.stops || r.stops.length === 0) continue;
+               
+               const startCoords: [number, number] = [parseFloat(currentTerminal.latitude), parseFloat(currentTerminal.longitude)]
+               const endStop = r.stops[r.stops.length - 1]
+               const endCoords: [number, number] = [parseFloat(endStop.latitude), parseFloat(endStop.longitude)]
+               
+               const geometry = await fetchRouteGeometry(
+                   { lat: startCoords[0], lng: startCoords[1] }, 
+                   { lat: endCoords[0], lng: endCoords[1] }, 
+                   'driving'
+               )
+
+               const pathCoords = geometry || [startCoords, endCoords]
+
+               const line = LeafletLib.polyline(pathCoords, { color: "#3b82f6", weight: 3, opacity: 0.7 }).addTo(mapInstance)
+               const destMarker = LeafletLib.circleMarker(endCoords, { radius: 4, fillColor: "#3b82f6", color: "#fff", weight: 1, fillOpacity: 1 }).addTo(mapInstance)
+               
+               terminalPreviewRef.current.push(line, destMarker)
+          }
+      })
+    }
+
+    const fetchInitialDataSafe = async (LeafletLib: typeof Leaflet, mapInstance: Map) => {
+      try {
+        const token = localStorage.getItem("accessToken")
+        const headers: HeadersInit = { "Content-Type": "application/json" }
+        if (token) headers["Authorization"] = `Bearer ${token}`
+
+        const response = await fetch(`${API_BASE_URL}/cached/terminals/`, { headers })
+        
+        if (!response.ok) throw new Error("Failed to fetch terminal data")
+        const data = await response.json()
+        
+        const terminals = data.terminals as APITerminal[]
+        setTerminalsData(terminals)
+        terminalsDataRef.current = terminals 
+
+        if (!mapInstance || !mapInstance.getContainer()) {
+          console.warn("Map instance not ready; skipping marker addition.");
+          return;
+        }
+
+        setTimeout(() => {
+          terminals.forEach(t => {
+            addTerminalMarkerSafe(LeafletLib, mapInstance, t)
+          })
+        }, 100)
+
+        setReady(true)
+      } catch (e) {
+        console.error("API Data Fetch Error:", e)
+      }
+    }
+
     import("leaflet").then((LeafletModule) => {
       if (!isMounted) return;
       if (mapInstanceRef.current) return;
       if (!mapContainerRef.current) return;
 
       const LeafletLib = LeafletModule.default
-      setLeaflet(LeafletLib)
+      
+      setLeaflet(() => LeafletLib)
 
       const newMap = LeafletLib.map(mapContainerRef.current, {
         zoomControl: false,
       }).setView([14.5995, 121.0], 12)
 
       mapInstanceRef.current = newMap
-      setMap(newMap)
+      setMap(() => newMap)
 
       LeafletLib.tileLayer("https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png", {
         attribution: '&copy; OpenStreetMap contributors &copy; CARTO',
@@ -185,7 +308,7 @@ export function MapInterface() {
         setMap(null)
       }
     }
-  },)
+  }, [])
 
   useEffect(() => {
     if (!map || !L) return;
@@ -268,7 +391,6 @@ export function MapInterface() {
           if (!response.ok) return null;
           const data = await response.json();
           if (data.routes && data.routes.length > 0) {
-              // Explicitly type the coordinate array
               return data.routes[0].geometry.coordinates.map((xy: [number, number]) => [xy[1], xy[0]] as [number, number]);
           }
           return null;
@@ -276,124 +398,6 @@ export function MapInterface() {
           console.error("OSRM Fetch Error", e);
           return null;
       }
-  }
-
-  const fetchInitialDataSafe = async (LeafletLib: typeof Leaflet, mapInstance: Map) => {
-    try {
-      const token = localStorage.getItem("accessToken")
-      const headers: HeadersInit = { "Content-Type": "application/json" }
-      if (token) headers["Authorization"] = `Bearer ${token}`
-
-      const response = await fetch(`${API_BASE_URL}/cached/terminals/`, { headers })
-      
-      if (!response.ok) throw new Error("Failed to fetch terminal data")
-      const data = await response.json()
-      
-      const terminals = data.terminals as APITerminal[]
-      setTerminalsData(terminals)
-      terminalsDataRef.current = terminals 
-
-      terminals.forEach(t => {
-        addTerminalMarkerSafe(LeafletLib, mapInstance, t)
-      })
-
-      setReady(true)
-    } catch (e) {
-      console.error("API Data Fetch Error:", e)
-    }
-  }
-
-  const addTerminalMarkerSafe = (LeafletLib: typeof Leaflet, mapInstance: Map, t: APITerminal) => {
-    const iconHtml = `
-        <div style="position:relative;width:32px;height:32px;display:flex;align-items:center;justify-content:center;">
-          <div style="width:30px;height:30px;background-color:#0f172a;border:2px solid white;border-radius:50%;box-shadow:0 4px 6px rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;">
-            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9C18.7 10.6 16 10 16 10s-1.3-1.4-2.2-2.3c-.5-.4-1.1-.7-1.8-.7H5c-.6 0-1.1.4-1.4.9l-1.4 2.9A3.7 3.7 0 0 0 2 12v4c0 .6.4 1 1 1h2" />
-              <circle cx="7" cy="17" r="2" />
-              <path d="M9 17h6" />
-              <circle cx="17" cy="17" r="2" />
-            </svg>
-          </div>
-          <div style="position:absolute;top:-4px;right:-4px;background-color:#2563eb;color:white;font-size:10px;font-weight:bold;width:16px;height:16px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:1px solid white;">
-            ${t.routes ? t.routes.length : 0}
-          </div>
-        </div>
-    `
-
-    const icon = LeafletLib.divIcon({
-        className: "", 
-        html: iconHtml,
-        iconSize: [32, 32],
-        iconAnchor: [16, 32],
-        popupAnchor: [0, -32]
-    })
-    
-    const lat = parseFloat(t.latitude)
-    const lng = parseFloat(t.longitude)
-    const marker = LeafletLib.marker([lat, lng], { icon }).addTo(mapInstance)
-
-    const routesListHtml = t.routes.map(r => {
-        if (!r.stops || r.stops.length === 0) return '';
-        
-        const endStop = r.stops[r.stops.length - 1];
-        if (!endStop) return '';
-
-        return `
-            <div style="display:flex;gap:8px;padding:8px 0;border-bottom:1px solid #f1f5f9;">
-                <div style="margin-top:4px;width:8px;height:8px;border-radius:50%;background-color:#3b82f6;flex-shrink:0;"></div>
-                <div>
-                    <p style="font-size:12px;font-weight:600;color:#1e293b;margin:0;">${endStop.stop_name}</p>
-                    <p style="font-size:10px;color:#64748b;margin:0;text-transform:uppercase;">${r.mode.mode_name} • ₱${endStop.fare}</p>
-                </div>
-            </div>
-        `
-    }).join('');
-
-    const popupContent = `
-        <div style="min-width:200px;font-family:sans-serif;">
-            <div style="padding-bottom:8px;border-bottom:1px solid #e2e8f0;margin-bottom:8px;">
-                <h3 style="font-weight:bold;font-size:14px;color:#0f172a;margin:0;">${t.name}</h3>
-                <p style="font-size:12px;color:#64748b;margin:0;">${t.city.name}</p>
-            </div>
-            <div style="max-height:150px;overflow-y:auto;">
-                ${t.routes.length > 0 ? routesListHtml : '<p style="font-size:12px;color:#94a3b8;font-style:italic;">No routes.</p>'}
-            </div>
-        </div>
-    `
-
-    marker.bindPopup(popupContent, { closeButton: false, maxWidth: 260 })
-    
-    marker.on('click', async (e: LeafletMouseEvent) => {
-        LeafletLib.DomEvent.stopPropagation(e);
-        if (terminalPreviewRef.current.length > 0) {
-            terminalPreviewRef.current.forEach(layer => mapInstance.removeLayer(layer))
-            terminalPreviewRef.current = []
-        }
-        
-        const currentTerminal = terminalsDataRef.current.find(item => item.id === t.id)
-        if (!currentTerminal) return
-
-        for (const r of currentTerminal.routes) {
-             if (!r.stops || r.stops.length === 0) continue;
-             
-             const startCoords: [number, number] = [parseFloat(currentTerminal.latitude), parseFloat(currentTerminal.longitude)]
-             const endStop = r.stops[r.stops.length - 1]
-             const endCoords: [number, number] = [parseFloat(endStop.latitude), parseFloat(endStop.longitude)]
-             
-             const geometry = await fetchRouteGeometry(
-                 { lat: startCoords[0], lng: startCoords[1] }, 
-                 { lat: endCoords[0], lng: endCoords[1] }, 
-                 'driving'
-             )
-
-             const pathCoords = geometry || [startCoords, endCoords]
-
-             const line = LeafletLib.polyline(pathCoords, { color: "#3b82f6", weight: 3, opacity: 0.7 }).addTo(mapInstance)
-             const destMarker = LeafletLib.circleMarker(endCoords, { radius: 4, fillColor: "#3b82f6", color: "#fff", weight: 1, fillOpacity: 1 }).addTo(mapInstance)
-             
-             terminalPreviewRef.current.push(line, destMarker)
-        }
-    })
   }
 
   const geocodeLocation = async (locationName: string) => {
@@ -462,7 +466,7 @@ export function MapInterface() {
                   name: `${route.mode.mode_name} - ${terminal.name} to ${endStop.stop_name}`,
                   type: route.mode.mode_name,
                   fare: { regular: parseFloat(endStop.fare), discounted: parseFloat(endStop.fare) * 0.8 },
-                  distance: (endStop.distance ?? 0).toFixed(1) + " km",
+                  distance: parseFloat(`${endStop.distance || 0}`).toFixed(1) + " km",
                   time: endStop.time + " min",
                   start: startT,
                   end: endT,
@@ -602,7 +606,7 @@ export function MapInterface() {
         routeLayersRef.current.push(startMarker, endMarker);
 
         if (boundsArray.length > 0) {
-            map.fitBounds(boundsArray, { padding: [50, 50] });
+            map.fitBounds(boundsArray as LatLngBoundsExpression, { padding: [50, 50] });
         }
 
         setSelectedRoute({
@@ -627,39 +631,28 @@ export function MapInterface() {
   }
 
   const handleRecenter = () => { if (map) map.setView([14.5995, 121.0], 12) }
-  
-  // Handlers for modal
+
   const handleSelectOnMap = () => {
-      setShowContribute(false)
-      setPinningMode(null) // Reset first
-      
-      // Use setTimeout to ensure modal closes before we set the "listening" state
-      setTimeout(() => {
-          // We need a specific mode for contribution pinning
-          // Re-using pinningMode='from' just for coordinate capture, or add a 'contribute' mode
-          // For simplicity, let's use a temporary alert or visual cue and listen for one click
-          
-          const tempHandler = (e: LeafletMouseEvent) => {
-               const coords: Terminal = { id: "contribution", lat: e.latlng.lat, lng: e.latlng.lng, name: "Selected Location" }
-               setPinnedStart(coords)
-               // But wait, the modal expects 'pinnedLocation'
-               // Let's reuse pinnedStart for simplicity as the 'active' pin
-               
-               // Re-open modal
-               setShowContribute(true)
-               
-               // Remove handler
-               map?.off('click', tempHandler)
-               
-               // Restore cursor
-               if (mapContainerRef.current) mapContainerRef.current.classList.remove('cursor-crosshair')
-          }
-          
-          if (map) {
-              map.on('click', tempHandler)
-              if (mapContainerRef.current) mapContainerRef.current.classList.add('cursor-crosshair')
-          }
-      }, 100)
+    setShowContribute(false)
+    setPinningMode(null)
+    
+    setTimeout(() => {
+        const tempHandler = (e: LeafletMouseEvent) => {
+             const coords = { id: "pinned", lat: e.latlng.lat, lng: e.latlng.lng, name: "Selected Location" }
+             setPinnedStart(coords)
+             
+             setShowContribute(true)
+             
+             map?.off('click', tempHandler)
+             
+             if (mapContainerRef.current) mapContainerRef.current.classList.remove('cursor-crosshair')
+        }
+        
+        if (map) {
+            map.on('click', tempHandler)
+            if (mapContainerRef.current) mapContainerRef.current.classList.add('cursor-crosshair')
+        }
+    }, 100)
   }
 
   return (
