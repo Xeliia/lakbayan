@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Map, Info } from "lucide-react"
+import { Map, Info, UserCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 export function Navigation() {
@@ -11,7 +11,7 @@ export function Navigation() {
   const links = [
     { href: "/", label: "Map", icon: Map },
     { href: "/about", label: "About", icon: Info },
-    { href: "/profile", label: "Profile", icon: Info },
+    { href: "/profile", label: "Profile", icon: UserCircle },
   ]
 
   return (
