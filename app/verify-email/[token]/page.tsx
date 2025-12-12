@@ -1,13 +1,16 @@
 "use client"
 import { useEffect, useState } from "react"
-import { useSearchParams, useRouter } from "next/navigation"
+import { useParams, useRouter } from "next/navigation"
 import { Loader2, CheckCircle2, XCircle } from "lucide-react"
 import { Button } from "@/components/ui/button"
 
 export default function VerifyEmailPage() {
-  const searchParams = useSearchParams()
+  const params = useParams()
   const router = useRouter()
-  const token = searchParams.get('token')
+  
+  const rawToken = params?.token as string
+  const token = rawToken ? decodeURIComponent(rawToken) : null
+
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading')
 
   useEffect(() => {
@@ -33,6 +36,7 @@ export default function VerifyEmailPage() {
           <>
             <CheckCircle2 className="w-12 h-12 mx-auto text-green-600"/>
             <h1 className="text-xl font-bold">Email Verified!</h1>
+            <p className="text-sm text-slate-500">Thank you for verifying your email.</p>
             <Button onClick={() => router.push('/auth')}>Go to Login</Button>
           </>
         )}
