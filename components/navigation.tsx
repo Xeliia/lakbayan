@@ -2,7 +2,7 @@
 
 import Link from "next/link"
 import { usePathname } from "next/navigation"
-import { Map, HelpCircle, Info } from "lucide-react"
+import { Map, Info, UserCircle } from "lucide-react"
 import { cn } from "@/lib/utils"
 
 export function Navigation() {
@@ -10,16 +10,14 @@ export function Navigation() {
 
   const links = [
     { href: "/", label: "Map", icon: Map },
-    { href: "/how-to-use", label: "How to Use", icon: HelpCircle },
     { href: "/about", label: "About", icon: Info },
-    { href: "/profile", label: "Profile", icon: Info },
+    { href: "/profile", label: "Profile", icon: UserCircle },
   ]
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 bg-background/95 backdrop-blur-sm border-b border-border">
       <div className="container mx-auto px-4">
         <div className="flex items-center justify-between h-16">
-          {/* Logo */}
           <Link href="/" className="flex items-center gap-2 group">
             <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center group-hover:scale-105 transition-transform">
               <Map className="w-6 h-6 text-primary-foreground" />
@@ -30,7 +28,6 @@ export function Navigation() {
             </div>
           </Link>
 
-          {/* Navigation Links */}
           <div className="flex items-center gap-1">
             {links.map((link) => {
               const Icon = link.icon

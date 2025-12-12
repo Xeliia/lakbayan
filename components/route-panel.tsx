@@ -99,7 +99,6 @@ export function RoutePanel({ route, onClose, onStepClick }: RoutePanelProps) {
                     }
                   </div>
 
-                  {/* Content */}
                   <div className="flex-1 pt-1">
                     <p className={`text-sm font-medium leading-snug ${isWalk ? 'text-slate-500 italic' : 'text-slate-800'}`}>
                       {step.instruction}
