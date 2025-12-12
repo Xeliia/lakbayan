@@ -1,19 +1,27 @@
 "use client"
 
-import { useState } from "react"
-import { Eye, EyeOff, Loader2, Lock, Mail, User, AlertCircle, CheckCircle2 } from "lucide-react"
+import { useState, useEffect, useCallback } from "react"
+import { Eye, EyeOff, Loader2, Lock, Mail, User, AlertCircle, CheckCircle2, LogOut, ShieldAlert } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { useRouter } from "next/navigation"
 
 const API_BASE_URL = "https://api-lakbayan.onrender.com/api"
 
+interface UserData {
+  username: string
+  email: string
+  id?: number
+}
+
 export default function AuthPage() {
-  const router = useRouter()
-  const [isLogin, setIsLogin] = useState(true)
+  const [viewState, setViewState] = useState<'login' | 'register' | 'profile'>('login')
   const [isLoading, setIsLoading] = useState(false)
+  const [isPageLoading, setIsPageLoading] = useState(true)
   const [showPassword, setShowPassword] = useState(false)
+  
+  const [user, setUser] = useState<UserData | null>(null)
+  const [isVerified, setIsVerified] = useState(false)
   
   const [formData, setFormData] = useState({
     username: "",
@@ -24,6 +32,39 @@ export default function AuthPage() {
 
   const [error, setError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
+
+  const checkAuthStatus = useCallback(async () => {
+    const token = localStorage.getItem("accessToken")
+    if (!token) {
+      setIsPageLoading(false)
+      return
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/email-verification/status/`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+
+      if (response.ok) {
+        const data = await response.json()
+        setUser({ username: data.username, email: data.email || data.primary_email })
+        setIsVerified(data.email_verified)
+        setViewState('profile')
+      } else {
+        handleLogout() 
+      }
+    } catch {
+      handleLogout()
+    } finally {
+      setIsPageLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    checkAuthStatus()
+  }, [checkAuthStatus])
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value })
@@ -36,15 +77,15 @@ export default function AuthPage() {
     setError(null)
     setSuccess(null)
 
-    if (!isLogin && formData.password !== formData.confirmPassword) {
+    if (viewState === 'register' && formData.password !== formData.confirmPassword) {
       setError("Passwords do not match")
       setIsLoading(false)
       return
     }
 
     try {
-      const endpoint = isLogin ? "/accounts/login/" : "/accounts/register/"
-      const payload = isLogin 
+      const endpoint = viewState === 'login' ? "/accounts/login/" : "/accounts/register/"
+      const payload = viewState === 'login'
         ? { username: formData.username, password: formData.password }
         : { 
             username: formData.username, 
@@ -73,21 +114,139 @@ export default function AuthPage() {
       localStorage.setItem("refreshToken", data.refresh_token)
       localStorage.setItem("user", JSON.stringify(data.user))
 
-      setSuccess(isLogin ? "Login successful!" : "Account created! Please check your email for verification.")
-      
-      setTimeout(() => {
-        router.push("/") 
-      }, 1500)
+      if (viewState === 'login') {
+        checkAuthStatus()
+      } else {
+        setSuccess("Account created! Please check your email.")
+        setTimeout(() => {
+            setViewState('login')
+            setSuccess(null)
+        }, 2000)
+      }
 
     } catch (err: unknown) {
-      if (err instanceof Error) {
-        setError(err.message)
-      } else {
-        setError("Something went wrong")
-      }
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message || "Something went wrong")
     } finally {
       setIsLoading(false)
     }
+  }
+
+  const handleResendVerification = async () => {
+    setIsLoading(true)
+    setError(null)
+    setSuccess(null)
+    const token = localStorage.getItem("accessToken")
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/email-verification/resend/`, {
+        method: "POST",
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+      
+      const data = await response.json()
+      
+      if (response.ok) {
+        setSuccess("Verification email sent! Check your inbox.")
+      } else {
+        if (response.status === 429) {
+             throw new Error("Please wait a few minutes before trying again.")
+        }
+        throw new Error(data.message || "Failed to resend email")
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err)
+      setError(message)
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  const handleLogout = () => {
+    localStorage.removeItem("accessToken")
+    localStorage.removeItem("refreshToken")
+    localStorage.removeItem("user")
+    setUser(null)
+    setViewState('login')
+    setFormData({ username: "", email: "", password: "", confirmPassword: "" })
+  }
+
+  if (isPageLoading) {
+    return (
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+            <Loader2 className="w-8 h-8 animate-spin text-slate-400"/>
+        </div>
+    )
+  }
+
+  if (viewState === 'profile' && user) {
+    return (
+        <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+            <div className="bg-white w-full max-w-md rounded-2xl shadow-xl border border-slate-100 overflow-hidden">
+                <div className="bg-slate-900 p-8 text-white text-center">
+                    <div className="w-20 h-20 bg-slate-800 rounded-full mx-auto mb-4 flex items-center justify-center text-2xl font-bold">
+                        {user.username.charAt(0).toUpperCase()}
+                    </div>
+                    <h1 className="text-xl font-bold">{user.username}</h1>
+                    <p className="text-slate-400 text-sm">{user.email}</p>
+                </div>
+
+                <div className="p-6 space-y-6">
+                    {!isVerified ? (
+                        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 space-y-3">
+                            <div className="flex items-start gap-3">
+                                <ShieldAlert className="w-5 h-5 text-amber-600 mt-0.5" />
+                                <div>
+                                    <h3 className="font-semibold text-amber-900">Email Not Verified</h3>
+                                    <p className="text-sm text-amber-700 mt-1">
+                                        You need to verify your email address before you can contribute to LakBayan.
+                                    </p>
+                                </div>
+                            </div>
+                            <Button 
+                                onClick={handleResendVerification} 
+                                disabled={isLoading}
+                                variant="outline" 
+                                className="w-full border-amber-300 text-amber-800 hover:bg-amber-100"
+                            >
+                                {isLoading ? <Loader2 className="w-4 h-4 mr-2 animate-spin"/> : <Mail className="w-4 h-4 mr-2"/>}
+                                Resend Verification Email
+                            </Button>
+                        </div>
+                    ) : (
+                        <div className="bg-green-50 border border-green-200 rounded-xl p-4 flex items-center gap-3">
+                            <CheckCircle2 className="w-6 h-6 text-green-600" />
+                            <div>
+                                <h3 className="font-semibold text-green-900">Account Verified</h3>
+                                <p className="text-sm text-green-700">You are fully verified and ready to contribute.</p>
+                            </div>
+                        </div>
+                    )}
+
+                    {success && (
+                        <div className="bg-green-50 text-green-600 text-sm p-3 rounded-md flex items-center gap-2 animate-in fade-in">
+                            <CheckCircle2 className="w-4 h-4" />
+                            {success}
+                        </div>
+                    )}
+
+                    {error && (
+                        <div className="bg-red-50 text-red-600 text-sm p-3 rounded-md flex items-center gap-2 animate-in fade-in">
+                            <AlertCircle className="w-4 h-4" />
+                            {error}
+                        </div>
+                    )}
+
+                    <Button variant="destructive" className="w-full" onClick={handleLogout}>
+                        <LogOut className="w-4 h-4 mr-2" />
+                        Sign Out
+                    </Button>
+                </div>
+            </div>
+        </div>
+    )
   }
 
   return (
@@ -97,24 +256,24 @@ export default function AuthPage() {
         <div className="bg-slate-900 p-6 text-white text-center">
           <h1 className="text-2xl font-bold mb-1">LakBayan</h1>
           <p className="text-slate-300 text-sm">
-            {isLogin ? "Welcome back, Traveler" : "Join the Community"}
+            {viewState === 'login' ? "Welcome back, Traveler" : "Join the Community"}
           </p>
         </div>
 
         <div className="p-6">
           <div className="flex gap-2 mb-6 bg-slate-100 p-1 rounded-lg">
             <button
-              onClick={() => { setIsLogin(true); setError(null); }}
+              onClick={() => { setViewState('login'); setError(null); }}
               className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${
-                isLogin ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                viewState === 'login' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
               }`}
             >
               Login
             </button>
             <button
-              onClick={() => { setIsLogin(false); setError(null); }}
+              onClick={() => { setViewState('register'); setError(null); }}
               className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${
-                !isLogin ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
+                viewState === 'register' ? "bg-white text-slate-900 shadow-sm" : "text-slate-500 hover:text-slate-700"
               }`}
             >
               Register
@@ -137,7 +296,7 @@ export default function AuthPage() {
               </div>
             </div>
 
-            {!isLogin && (
+            {viewState === 'register' && (
               <div className="space-y-2">
                 <Label>Email</Label>
                 <div className="relative">
@@ -178,7 +337,7 @@ export default function AuthPage() {
               </div>
             </div>
 
-            {!isLogin && (
+            {viewState === 'register' && (
               <div className="space-y-2">
                 <Label>Confirm Password</Label>
                 <div className="relative">
@@ -212,11 +371,11 @@ export default function AuthPage() {
 
             <Button className="w-full" type="submit" disabled={isLoading}>
               {isLoading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
-              {isLogin ? "Sign In" : "Create Account"}
+              {viewState === 'login' ? "Sign In" : "Create Account"}
             </Button>
           </form>
 
-          {isLogin && (
+          {viewState === 'login' && (
              <p className="text-center mt-4 text-xs text-muted-foreground cursor-pointer hover:underline">
                Forgot your password?
              </p>

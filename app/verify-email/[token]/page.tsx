@@ -19,7 +19,7 @@ export default function VerifyEmailPage() {
       return
     }
 
-    fetch(`https://lakbayan-backend.onrender.com/api/accounts/verify-email/?token=${token}`)
+    fetch(`https://api-lakbayan.onrender.com/api/accounts/verify-email/?token=${token}`)
       .then(res => {
         if (res.ok) setStatus('success')
         else setStatus('error')
