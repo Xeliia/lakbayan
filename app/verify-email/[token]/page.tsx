@@ -22,45 +22,24 @@ export default function VerifyEmailPage() {
     }
 
     const verify = async () => {
-        const allauthUrl = `https://api-lakbayan.onrender.com/accounts/confirm-email/${fullToken}/`
-
+        const jsonUrl = 'https://api-lakbayan.onrender.com/api/auth/registration/verify-email/'
+        
         try {
-            let res = await fetch(allauthUrl, {
-                method: 'GET',
-                headers: { 'Accept': 'application/json, text/html' }
-            })
-
-            if (res.ok) {
-                setStatus('success')
-                return
-            }
-
-            res = await fetch(allauthUrl, {
+            const res = await fetch(jsonUrl, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({}) 
-            })
-
-            if (res.ok) {
-                setStatus('success')
-                return
-            }
-
-            const jsonUrl = 'https://lakbayan-backend.onrender.com/api/auth/registration/verify-email/'
-            const jsonRes = await fetch(jsonUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'Accept': 'application/json'
+                },
                 body: JSON.stringify({ key: fullToken })
             })
 
-            if (jsonRes.ok) {
+            if (res.ok) {
                 setStatus('success')
-                return
+            } else {
+                setStatus('error')
+                setDebugMsg(`Verification failed. Status: ${res.status}`)
             }
-
-            setStatus('error')
-            setDebugMsg(`Server rejected the key. Status: ${res.status}`)
-
         } catch (err: unknown) {
             setStatus('error')
             if (err instanceof Error) {
