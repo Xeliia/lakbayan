@@ -22,24 +22,38 @@ export default function VerifyEmailPage() {
     }
 
     const verify = async () => {
-        const jsonUrl = 'https://api-lakbayan.onrender.com/api/auth/registration/verify-email/'
-        
+        const allauthUrl = `https://lakbayan-backend.onrender.com/accounts/confirm-email/${fullToken}/`
+
         try {
-            const res = await fetch(jsonUrl, {
+            const res = await fetch(allauthUrl, {
                 method: 'POST',
                 headers: { 
                     'Content-Type': 'application/json',
                     'Accept': 'application/json'
                 },
-                body: JSON.stringify({ key: fullToken })
+                body: JSON.stringify({}) 
             })
 
             if (res.ok) {
                 setStatus('success')
-            } else {
-                setStatus('error')
-                setDebugMsg(`Verification failed. Status: ${res.status}`)
+                return
             }
+
+            const jsonUrl = 'https://lakbayan-backend.onrender.com/api/auth/registration/verify-email/'
+            const jsonRes = await fetch(jsonUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: fullToken })
+            })
+
+            if (jsonRes.ok) {
+                setStatus('success')
+                return
+            }
+
+            setStatus('error')
+            setDebugMsg(`Verification failed. Status: ${res.status}`)
+
         } catch (err: unknown) {
             setStatus('error')
             if (err instanceof Error) {
@@ -62,7 +76,7 @@ export default function VerifyEmailPage() {
           <>
             <CheckCircle2 className="w-12 h-12 mx-auto text-green-600"/>
             <h1 className="text-xl font-bold">Email Verified!</h1>
-            <p className="text-sm text-slate-500">Your account is active.</p>
+            <p className="text-sm text-slate-500">Your account is now active.</p>
             <Button onClick={() => router.push('/auth')}>Go to Login</Button>
           </>
         )}
