@@ -39,7 +39,7 @@ export default function VerifyEmailPage() {
                 return
             }
 
-            const jsonUrl = 'https://lakbayan-backend.onrender.com/api/auth/registration/verify-email/'
+            const jsonUrl = 'https://api-lakbayan.onrender.com/api/auth/registration/verify-email/'
             const jsonRes = await fetch(jsonUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
