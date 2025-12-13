@@ -36,7 +36,7 @@ interface APIRoute {
     latitude: string | number
     longitude: string | number
     fare: string | number
-    time: number
+    time: number | string
     distance?: string | number
   }[]
   mode: {
@@ -153,6 +153,25 @@ function getModeIconHtml(mode: string) {
         </div>
     `;
 }
+
+// --- Data Parsing Helpers ---
+const formatDuration = (minutes: number) => {
+    const safeMinutes = Math.abs(Math.round(minutes));
+    const hrs = Math.floor(safeMinutes / 60);
+    const mins = Math.floor(safeMinutes % 60);
+    if (hrs > 0) return `${hrs} hr ${mins} min`;
+    return `${mins} min`;
+}
+
+const formatDistance = (value: string | number | undefined) => {
+    const km = Math.abs(parseDistanceInput(value ? value.toString() : '0'));
+    if (km >= 1) {
+      return `${km.toFixed(1)} km`;
+    }
+    const meters = Math.round(km * 1000);
+    return `${meters} m`;
+}
+
 
 export function MapInterface() {
   const API_BASE_URL = "https://api-lakbayan.onrender.com/api"
@@ -284,13 +303,22 @@ export function MapInterface() {
 
       const routesListHtml = activeRoutes.map(r => {
           if (!r.stops || r.stops.length === 0) return '';
+          
           const endStop = r.stops[r.stops.length - 1];
+          const fare = Math.abs(parseFloat(endStop.fare.toString()) || 0).toFixed(2);
+          const time = formatDuration(parseFloat(endStop.time.toString()) || 0);
+          const distance = formatDistance(endStop.distance);
+
           return `
               <div style="display:flex;gap:8px;padding:8px 0;border-bottom:1px solid #f1f5f9;">
                   <div style="margin-top:4px;width:8px;height:8px;border-radius:50%;background-color:${getModeColor(r.mode.mode_name)};flex-shrink:0;"></div>
-                  <div>
-                      <p style="font-size:12px;font-weight:600;color:#1e293b;margin:0;">${endStop.stop_name}</p>
-                      <p style="font-size:10px;color:#64748b;margin:0;text-transform:uppercase;">${r.mode.mode_name} • ₱${endStop.fare}</p>
+                  <div style="flex:1;">
+                      <p style="font-size:12px;font-weight:600;color:#1e293b;margin:0;">${r.destination_name || endStop.stop_name}</p>
+                      <p style="font-size:10px;color:#64748b;margin:0;text-transform:uppercase;">${r.mode.mode_name} • 
+                        <span style="font-weight:bold;color:#4f46e5;">₱${fare}</span> • 
+                        <span style="font-weight:bold;color:#10b981;">${time}</span> • 
+                        <span style="font-weight:bold;color:#f59e0b;">${distance}</span>
+                      </p>
                   </div>
               </div>
           `
@@ -325,40 +353,40 @@ export function MapInterface() {
           }
           
           for (const r of activeRoutes) {
-               if (!r.stops || r.stops.length === 0) continue;
-               
-               const endStop = r.stops[r.stops.length - 1]
-               const endCoords: [number, number] = [parseFloat(endStop.latitude.toString()), parseFloat(endStop.longitude.toString())]
-               
-               let pathCoords: [number, number][] = []
+              if (!r.stops || r.stops.length === 0) continue;
+              
+              const endStop = r.stops[r.stops.length - 1]
+              const endCoords: [number, number] = [parseFloat(endStop.latitude.toString()), parseFloat(endStop.longitude.toString())]
+              
+              let pathCoords: [number, number][] = []
 
-               if (r.polyline && r.polyline.coordinates && r.polyline.coordinates.length > 0) {
-                   pathCoords = processGeoJsonCoordinates(r.polyline.coordinates);
-               } else if (r.geometry && r.geometry.length > 0) {
-                   pathCoords = r.geometry
-               }
+              if (r.polyline && r.polyline.coordinates && r.polyline.coordinates.length > 0) {
+                  pathCoords = processGeoJsonCoordinates(r.polyline.coordinates);
+              } else if (r.geometry && r.geometry.length > 0) {
+                  pathCoords = r.geometry
+              }
 
-               const lineColor = getModeColor(r.mode.mode_name);
-               
-               if (pathCoords.length > 0) {
-                   const line = LeafletLib.polyline(pathCoords, { color: lineColor, weight: 4, opacity: 0.8 }).addTo(mapInstance)
-                   terminalPreviewRef.current.push(line)
-               } else {
-                   const simpleLine = LeafletLib.polyline([[lat, lng], endCoords], { color: lineColor, weight: 4, dashArray: '10, 10', opacity: 0.6 }).addTo(mapInstance)
-                   terminalPreviewRef.current.push(simpleLine)
-               }
-               
-               r.stops.forEach(stop => {
-                   const stopCoords: [number, number] = [parseFloat(stop.latitude.toString()), parseFloat(stop.longitude.toString())];
-                   const stopMarker = LeafletLib.circleMarker(stopCoords, { 
-                       radius: 4, fillColor: "#fff", color: lineColor, weight: 2, fillOpacity: 1 
-                   }).addTo(mapInstance)
-                   stopMarker.bindTooltip(stop.stop_name, { permanent: false, direction: 'top', className: 'text-xs font-bold' });
-                   terminalPreviewRef.current.push(stopMarker)
-               })
+              const lineColor = getModeColor(r.mode.mode_name);
+              
+              if (pathCoords.length > 0) {
+                  const line = LeafletLib.polyline(pathCoords, { color: lineColor, weight: 4, opacity: 0.8 }).addTo(mapInstance)
+                  terminalPreviewRef.current.push(line)
+              } else {
+                  const simpleLine = LeafletLib.polyline([[lat, lng], endCoords], { color: lineColor, weight: 4, dashArray: '10, 10', opacity: 0.6 }).addTo(mapInstance)
+                  terminalPreviewRef.current.push(simpleLine)
+              }
+              
+              r.stops.forEach(stop => {
+                  const stopCoords: [number, number] = [parseFloat(stop.latitude.toString()), parseFloat(stop.longitude.toString())];
+                  const stopMarker = LeafletLib.circleMarker(stopCoords, { 
+                      radius: 4, fillColor: "#fff", color: lineColor, weight: 2, fillOpacity: 1 
+                  }).addTo(mapInstance)
+                  stopMarker.bindTooltip(stop.stop_name, { permanent: false, direction: 'top', className: 'text-xs font-bold' });
+                  terminalPreviewRef.current.push(stopMarker)
+              })
 
-               const destMarker = LeafletLib.circleMarker(endCoords, { radius: 6, fillColor: lineColor, color: "#fff", weight: 3, fillOpacity: 1 }).addTo(mapInstance)
-               terminalPreviewRef.current.push(destMarker)
+              const destMarker = LeafletLib.circleMarker(endCoords, { radius: 6, fillColor: lineColor, color: "#fff", weight: 3, fillOpacity: 1 }).addTo(mapInstance)
+              terminalPreviewRef.current.push(destMarker)
           }
       })
   }
@@ -579,8 +607,9 @@ export function MapInterface() {
                   geometry = route.geometry;
               }
 
-              const endStopFare = parseFloat(endStop.fare.toString()) || 0;
-              const endStopDist = parseFloat(`${endStop.distance || 0}`);
+              const endStopFare = Math.abs(parseFloat(endStop.fare.toString()) || 0);
+              const endStopDist = Math.abs(parseDistanceInput(endStop.distance ? endStop.distance.toString() : '0'));
+              const endStopTime = Math.abs(parseFloat(endStop.time.toString()) || 0);
 
               const baseRoute: ExpandedRoute = {
                   originalId: `${terminal.id}-${route.id}`,
@@ -588,10 +617,10 @@ export function MapInterface() {
                   type: route.mode.mode_name,
                   fare: { regular: endStopFare, discounted: endStopFare * 0.8 },
                   distance: endStopDist.toFixed(1) + " km",
-                  time: endStop.time + " min",
+                  time: endStopTime + " min",
                   start: startT,
                   end: endT,
-                  steps: route.stops.map(s => ({ instruction: s.stop_name, location: [parseFloat(s.latitude.toString()), parseFloat(s.longitude.toString())] })),
+                  steps: route.stops.map(s => ({ instruction: s.stop_name })),
                   geometry: geometry
               }
 
@@ -619,7 +648,7 @@ export function MapInterface() {
         const totalWalk = d1 + d2;
         
         if (totalWalk <= maxWalkKm) {
-            const timeVal = parseInt(segment.time);
+            const timeVal = parseFloat(segment.time);
             const distVal = parseFloat(segment.distance);
             const fareVal = segment.fare.regular;
             
@@ -645,7 +674,7 @@ export function MapInterface() {
                 const totalWalk = dStart + dTransfer + dEnd;
 
                 if (totalWalk <= maxWalkKm) {
-                    const timeVal = parseInt(r1.time) + parseInt(r2.time);
+                    const timeVal = parseFloat(r1.time) + parseFloat(r2.time);
                     const fareVal = r1.fare.regular + r2.fare.regular;
                     const distVal = parseFloat(r1.distance) + parseFloat(r2.distance);
 
@@ -661,28 +690,28 @@ export function MapInterface() {
                 }
                 
                 if (limitTransfers >= 2) {
-                      for (const r3 of allSegments) {
-                          if (r2.originalId === r3.originalId || r1.originalId === r3.originalId) continue
-                          const dTransfer2 = getDistance(r2.end.lat, r2.end.lng, r3.start.lat, r3.start.lng)
-                          const dEnd2 = getDistance(r3.end.lat, r3.end.lng, toCoords.lat, toCoords.lng)
-                          const totalWalk3 = dStart + dTransfer + dTransfer2 + dEnd2;
+                     for (const r3 of allSegments) {
+                         if (r2.originalId === r3.originalId || r1.originalId === r3.originalId) continue
+                         const dTransfer2 = getDistance(r2.end.lat, r2.end.lng, r3.start.lat, r3.start.lng)
+                         const dEnd2 = getDistance(r3.end.lat, r3.end.lng, toCoords.lat, toCoords.lng)
+                         const totalWalk3 = dStart + dTransfer + dTransfer2 + dEnd2;
 
-                          if (totalWalk3 <= maxWalkKm) {
-                              const timeVal3 = parseInt(r1.time) + parseInt(r2.time) + parseInt(r3.time);
-                              const fareVal3 = r1.fare.regular + r2.fare.regular + r3.fare.regular;
-                              const distVal3 = parseFloat(r1.distance) + parseFloat(r2.distance) + parseFloat(r3.distance);
+                         if (totalWalk3 <= maxWalkKm) {
+                             const timeVal3 = parseFloat(r1.time) + parseFloat(r2.time) + parseFloat(r3.time);
+                             const fareVal3 = r1.fare.regular + r2.fare.regular + r3.fare.regular;
+                             const distVal3 = parseFloat(r1.distance) + parseFloat(r2.distance) + parseFloat(r3.distance);
 
-                              let score3 = 0;
-                              if (sortBy === 'time') score3 = timeVal3 + (totalWalk3 * 12);
-                              else if (sortBy === 'fare') score3 = fareVal3 + (totalWalk3 * 10);
-                              else score3 = distVal3 + totalWalk3;
+                             let score3 = 0;
+                             if (sortBy === 'time') score3 = timeVal3 + (totalWalk3 * 12);
+                             else if (sortBy === 'fare') score3 = fareVal3 + (totalWalk3 * 10);
+                             else score3 = distVal3 + totalWalk3;
 
-                              if (score3 < bestScore) {
-                                 bestScore = score3
-                                 bestPath = { type: "multi-transfer", segments: [r1, r2, r3], walks: [dStart, dTransfer, dTransfer2, dEnd2] }
-                              }
-                          }
-                      }
+                             if (score3 < bestScore) {
+                                bestScore = score3
+                                bestPath = { type: "multi-transfer", segments: [r1, r2, r3], walks: [dStart, dTransfer, dTransfer2, dEnd2] }
+                             }
+                         }
+                     }
                 }
             }
         }
@@ -696,32 +725,32 @@ export function MapInterface() {
         let totalDist = 0
 
         const drawSegment = async (segment: ExpandedRoute | null, start: {lat: number, lng: number}, end: {lat: number, lng: number}, type: 'walk' | 'ride', color: string, dash: string | null) => {
-              let geometry: [number, number][] | null = null;
-              
-              if (type === 'ride' && segment?.geometry && segment.geometry.length > 0) {
-                  geometry = segment.geometry;
-              } else {
-                  const profile = type === 'walk' ? 'walking' : 'driving';
-                  geometry = await fetchRouteGeometry(start, end, profile);
-              }
-              
-              let layer;
-              if (geometry) {
-                  layer = L.polyline(geometry, { color, weight: type === 'ride' ? 5 : 4, dashArray: dash || undefined, opacity: 0.8 }).addTo(map);
-              } else {
-                  layer = L.polyline([[start.lat, start.lng], [end.lat, end.lng]], { color, weight: type === 'ride' ? 5 : 4, dashArray: dash || undefined, opacity: 0.8 }).addTo(map);
-              }
-              routeLayersRef.current.push(layer);
-              
-              if (geometry) {
-                  boundsArray.push(...geometry);
-              } else {
-                  boundsArray.push([start.lat, start.lng], [end.lat, end.lng]);
-              }
+             let geometry: [number, number][] | null = null;
+             
+             if (type === 'ride' && segment?.geometry && segment.geometry.length > 0) {
+                 geometry = segment.geometry;
+             } else {
+                 const profile = type === 'walk' ? 'walking' : 'driving';
+                 geometry = await fetchRouteGeometry(start, end, profile);
+             }
+             
+             let layer;
+             if (geometry) {
+                 layer = L.polyline(geometry, { color, weight: type === 'ride' ? 5 : 4, dashArray: dash || undefined, opacity: 0.8 }).addTo(map);
+             } else {
+                 layer = L.polyline([[start.lat, start.lng], [end.lat, end.lng]], { color, weight: type === 'ride' ? 5 : 4, dashArray: dash || undefined, opacity: 0.8 }).addTo(map);
+             }
+             routeLayersRef.current.push(layer);
+             
+             if (geometry) {
+                 boundsArray.push(...geometry);
+             } else {
+                 boundsArray.push([start.lat, start.lng], [end.lat, end.lng]);
+             }
         }
 
         await drawSegment(null, fromCoords, bestPath.segments[0].start, 'walk', '#64748b', '10, 10');
-        steps.push({ instruction: `Walk ${bestPath.walks[0].toFixed(1)}km to ${bestPath.segments[0].start.name}`, location: [fromCoords.lat, fromCoords.lng] })
+        steps.push({ instruction: `Walk ${bestPath.walks[0].toFixed(1)}km to ${bestPath.segments[0].start.name}` })
         totalDist += bestPath.walks[0]
 
         for (let i = 0; i < bestPath.segments.length; i++) {
@@ -739,22 +768,22 @@ export function MapInterface() {
             await drawSegment(seg, seg.start, seg.end, 'ride', modeColor, null);
             
             if (seg.steps && seg.steps.length > 0) {
-                  seg.steps.forEach(step => {
-                      if (step.location) {
-                          const stopMarker = L.circleMarker(step.location, {
-                              radius: 4, fillColor: "white", color: modeColor, weight: 2, fillOpacity: 1
-                          }).addTo(map)
-                          stopMarker.bindTooltip(step.instruction, { direction: "top", offset: [0, -5], className: "font-sans text-xs font-bold" })
-                          routeLayersRef.current.push(stopMarker)
-                      }
-                  })
+                 seg.steps.forEach(step => {
+                     if (step.location) {
+                         const stopMarker = L.circleMarker(step.location, {
+                             radius: 4, fillColor: "white", color: modeColor, weight: 2, fillOpacity: 1
+                         }).addTo(map)
+                         stopMarker.bindTooltip(step.instruction, { direction: "top", offset: [0, -5], className: "font-sans text-xs font-bold" })
+                         routeLayersRef.current.push(stopMarker)
+                     }
+                 })
             }
 
             if (i < bestPath.segments.length - 1) {
                 const transferWalk = bestPath.walks[i+1]
                 const nextSeg = bestPath.segments[i+1]
                 totalDist += transferWalk
-                steps.push({ instruction: `Alight at ${seg.end.name}, Walk ${transferWalk.toFixed(1)}km to ${nextSeg.start.name}`, location: [seg.end.lat, seg.end.lng] })
+                steps.push({ instruction: `Alight at ${seg.end.name}, Walk ${transferWalk.toFixed(1)}km to ${nextSeg.start.name}` })
                 await drawSegment(null, seg.end, nextSeg.start, 'walk', '#64748b', '10, 10');
             }
         }
@@ -764,7 +793,7 @@ export function MapInterface() {
         await drawSegment(null, lastSeg.end, toCoords, 'walk', '#64748b', '10, 10');
         
         totalDist += lastWalk
-        steps.push({ instruction: `Alight at ${lastSeg.end.name}, Walk ${lastWalk.toFixed(1)}km to Destination`, location: [lastSeg.end.lat, lastSeg.end.lng] })
+        steps.push({ instruction: `Alight at ${lastSeg.end.name}, Walk ${lastWalk.toFixed(1)}km to Destination` })
 
         const startMarker = L.marker([fromCoords.lat, fromCoords.lng], {
             icon: L.divIcon({ className: '', html: `<div style="width:16px;height:16px;background-color:#22c55e;border:2px solid white;border-radius:50%;box-shadow:0 2px 4px rgba(0,0,0,0.3);"></div>`, iconSize: [16,16] })
@@ -884,23 +913,23 @@ export function MapInterface() {
           <div className="flex flex-col gap-3">
             <div className="space-y-2">
                <div className="relative flex gap-2">
-                  <div className="relative flex-1">
+                 <div className="relative flex-1">
                     <div className="absolute left-3 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-green-500 ring-2 ring-green-100"></div>
                     <Input placeholder="Start Location" value={fromLocation} onChange={(e) => { setFromLocation(e.target.value); setPinnedStart(null); }} className="pl-8 h-10 bg-slate-50 border-slate-200 focus:bg-white transition-colors text-sm" onKeyDown={(e) => e.key === "Enter" && handleSearch()} disabled={!ready}/>
-                  </div>
-                  <Button variant={pinningMode === 'from' ? "destructive" : "secondary"} size="icon" className="shrink-0 w-10 h-10" onClick={() => setPinningMode(pinningMode === 'from' ? null : 'from')} disabled={!ready}>
+                 </div>
+                 <Button variant={pinningMode === 'from' ? "destructive" : "secondary"} size="icon" className="shrink-0 w-10 h-10" onClick={() => setPinningMode(pinningMode === 'from' ? null : 'from')} disabled={!ready}>
                     <MapPin className="w-4 h-4" />
-                  </Button>
+                 </Button>
                </div>
 
                <div className="relative flex gap-2">
-                  <div className="relative flex-1">
+                 <div className="relative flex-1">
                     <div className="absolute left-3 top-1/2 -translate-y-1/2 w-2 h-2 rounded-full bg-red-500 ring-2 ring-red-100"></div>
                     <Input placeholder="Destination" value={toLocation} onChange={(e) => { setToLocation(e.target.value); setPinnedEnd(null); }} className="pl-8 h-10 bg-slate-50 border-slate-200 focus:bg-white transition-colors text-sm" onKeyDown={(e) => e.key === "Enter" && handleSearch()} disabled={!ready}/>
-                  </div>
-                  <Button variant={pinningMode === 'to' ? "destructive" : "secondary"} size="icon" className="shrink-0 w-10 h-10" onClick={() => setPinningMode(pinningMode === 'to' ? null : 'to')} disabled={!ready}>
-                      <MapPin className="w-4 h-4" />
-                  </Button>
+                 </div>
+                 <Button variant={pinningMode === 'to' ? "destructive" : "secondary"} size="icon" className="shrink-0 w-10 h-10" onClick={() => setPinningMode(pinningMode === 'to' ? null : 'to')} disabled={!ready}>
+                     <MapPin className="w-4 h-4" />
+                 </Button>
                </div>
             </div>
             
