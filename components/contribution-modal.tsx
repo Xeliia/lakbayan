@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectGroup, SelectLabel } from "@/components/ui/select"
 
 interface ContributionModalProps {
   isOpen: boolean
@@ -27,6 +27,17 @@ interface TerminalOption {
   city: { name: string }
 }
 
+interface CityOption {
+  id: number
+  name: string
+}
+
+interface RegionData {
+  id: number
+  name: string
+  cities: CityOption[]
+}
+
 export function ContributionModal({ isOpen, onClose, pinnedLocation, onSelectOnMap }: ContributionModalProps) {
   const [activeTab, setActiveTab] = useState<'terminal' | 'route'>('terminal')
   const [isLoading, setIsLoading] = useState(false)
@@ -36,11 +47,12 @@ export function ContributionModal({ isOpen, onClose, pinnedLocation, onSelectOnM
 
   const [modes, setModes] = useState<TransportMode[]>([])
   const [terminals, setTerminals] = useState<TerminalOption[]>([])
+  const [regions, setRegions] = useState<RegionData[]>([]) // Store dynamic regions/cities
 
   const [formData, setFormData] = useState({
     name: "",
     description: "",
-    city: "1", 
+    city: "", 
     lat: "",
     lng: "",
     terminal_id: "",
@@ -64,9 +76,10 @@ export function ContributionModal({ isOpen, onClose, pinnedLocation, onSelectOnM
       const fetchData = async () => {
         setIsFetchingData(true)
         try {
-          const [modesRes, terminalsRes] = await Promise.all([
+          const [modesRes, terminalsRes, regionsRes] = await Promise.all([
             fetch("https://api-lakbayan.onrender.com/api/transport-modes/"),
-            fetch("https://api-lakbayan.onrender.com/api/cached/terminals/")
+            fetch("https://api-lakbayan.onrender.com/api/cached/terminals/"),
+            fetch("https://api-lakbayan.onrender.com/api/cached/regions/") 
           ])
 
           if (modesRes.ok) {
@@ -79,6 +92,12 @@ export function ContributionModal({ isOpen, onClose, pinnedLocation, onSelectOnM
             const terminalsData = await terminalsRes.json()
             setTerminals(terminalsData.terminals || [])
           }
+
+          if (regionsRes.ok) {
+            const regionsData = await regionsRes.json()
+            setRegions(regionsData.regions || [])
+          }
+
         } catch (error) {
           console.error("Failed to fetch form data", error)
         } finally {
@@ -262,16 +281,19 @@ export function ContributionModal({ isOpen, onClose, pinnedLocation, onSelectOnM
                     <Label>City</Label>
                     <Select value={formData.city} onValueChange={(v) => setFormData({...formData, city: v})}>
                       <SelectTrigger>
-                        <SelectValue placeholder="Select City" />
+                        <SelectValue placeholder={isFetchingData ? "Loading cities..." : "Select City"} />
                       </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="1">Biñan</SelectItem>
-                        <SelectItem value="2">Santa Rosa</SelectItem>
-                        <SelectItem value="3">Calamba</SelectItem>
-                        <SelectItem value="4">San Pedro</SelectItem>
-                        <SelectItem value="5">Cabuyao</SelectItem>
-                        <SelectItem value="7">Caloocan</SelectItem>
-                        <SelectItem value="6">Manila</SelectItem>
+                      <SelectContent className="max-h-[200px]">
+                        {regions.map((region) => (
+                           <SelectGroup key={region.id}>
+                              <SelectLabel className="bg-slate-50 text-slate-500 font-bold">{region.name}</SelectLabel>
+                              {region.cities.map((city) => (
+                                 <SelectItem key={city.id} value={city.id.toString()}>
+                                    {city.name}
+                                 </SelectItem>
+                              ))}
+                           </SelectGroup>
+                        ))}
                       </SelectContent>
                     </Select>
                   </div>
